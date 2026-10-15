@@ -1,4 +1,5 @@
 com\lichtluxe\backend\entity\Product.class
+com\lichtluxe\backend\controller\PayPalController.class
 com\lichtluxe\backend\entity\Order$OrderStatus.class
 com\lichtluxe\backend\controller\CartController.class
 com\lichtluxe\backend\security\UserDetailsServiceImpl.class
@@ -8,6 +9,7 @@ com\lichtluxe\backend\repository\OrderRepository.class
 com\lichtluxe\backend\dto\JwtResponse.class
 com\lichtluxe\backend\entity\OrderItem.class
 com\lichtluxe\backend\repository\ProductRepository.class
+com\lichtluxe\backend\config\PayPalConfig.class
 com\lichtluxe\backend\controller\AuthController.class
 com\lichtluxe\backend\controller\OrderController.class
 com\lichtluxe\backend\dto\OrderRequest.class

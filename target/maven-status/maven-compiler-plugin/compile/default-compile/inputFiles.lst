@@ -1,3 +1,4 @@
+C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\controller\PayPalController.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\security\JwtUtils.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\entity\CartItem.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\dto\CartItemRequest.java
@@ -10,6 +11,7 @@ C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\b
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\dto\JwtResponse.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\security\AuthTokenFilter.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\controller\CartController.java
+C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\config\PayPalConfig.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\controller\AuthController.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\security\UserDetailsImpl.java
 C:\Users\Sharon\IdeaProjects\luxe_naturals_backend\src\main\java\com\lichtluxe\backend\controller\OrderController.java
