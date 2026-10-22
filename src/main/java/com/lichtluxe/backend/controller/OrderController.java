@@ -2,10 +2,13 @@ package com.lichtluxe.backend.controller;
 
 import com.lichtluxe.backend.dto.MessageResponse;
 import com.lichtluxe.backend.dto.OrderRequest;
+import com.lichtluxe.backend.dto.OrderStatusUpdateRequest;
 import com.lichtluxe.backend.entity.*;
 import com.lichtluxe.backend.repository.CartRepository;
 import com.lichtluxe.backend.repository.OrderRepository;
 import com.lichtluxe.backend.repository.UserRepository;
+import com.lichtluxe.backend.service.EmailService;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -29,6 +32,9 @@ public class OrderController {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private EmailService emailService;
+
     private User getCurrentUser() {
         String email = SecurityContextHolder.getContext().getAuthentication().getName();
         return userRepository.findByEmail(email).orElseThrow(() -> new RuntimeException("User not found"));
@@ -37,6 +43,13 @@ public class OrderController {
     @GetMapping
     public List<Order> getUserOrders() {
         return orderRepository.findByUserOrderByCreatedAtDesc(getCurrentUser());
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<?> getOrderById(@PathVariable Long id) {
+        Order order = orderRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Order not found with id: " + id));
+        return ResponseEntity.ok(order);
     }
 
     @PostMapping("/place")
@@ -57,7 +70,10 @@ public class OrderController {
                 .orderNumber("LLN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
                 .user(user)
                 .totalAmount(total)
-                .shippingName(request.getShippingName())
+                .status(Order.OrderStatus.CONFIRMED)
+                .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
+                .paymentMethod("ONLINE")
+                .shippingName(request.getShippingName() != null ? request.getShippingName() : user.getFirstName() + " " + user.getLastName())
                 .shippingAddress(request.getShippingAddress())
                 .shippingCity(request.getShippingCity())
                 .shippingPostcode(request.getShippingPostcode())
@@ -77,10 +93,51 @@ public class OrderController {
         }
 
         orderRepository.save(order);
-        
+
+        // 3. Automated Order Confirmation Email
+        emailService.sendOrderConfirmationEmail(order);
+
         // Clear cart
         cart.getItems().clear();
         cartRepository.save(cart);
+
+        return ResponseEntity.ok(order);
+    }
+
+    // ─── 4. Order Status Update & Notification (Admin / System Trigger) ───
+    @PutMapping("/{id}/status")
+    public ResponseEntity<?> updateOrderStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody OrderStatusUpdateRequest request) {
+
+        Order order = orderRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Order not found with id: " + id));
+
+        Order.OrderStatus previousStatus = order.getStatus();
+        Order.OrderStatus newStatus = request.getStatus();
+
+        order.setStatus(newStatus);
+        if (request.getCarrier() != null && !request.getCarrier().isBlank()) {
+            order.setCarrier(request.getCarrier());
+        }
+        if (request.getTrackingNumber() != null && !request.getTrackingNumber().isBlank()) {
+            order.setTrackingNumber(request.getTrackingNumber());
+        }
+        if (request.getTrackingUrl() != null && !request.getTrackingUrl().isBlank()) {
+            order.setTrackingUrl(request.getTrackingUrl());
+        }
+        if (request.getNotes() != null && !request.getNotes().isBlank()) {
+            order.setOrderNotes(request.getNotes());
+        }
+
+        orderRepository.save(order);
+
+        // Only send notification if status changed and hasn't been notified yet to avoid duplicate emails
+        if (order.getLastNotifiedStatus() == null || !order.getLastNotifiedStatus().equals(newStatus)) {
+            emailService.sendOrderStatusEmail(order, newStatus);
+            order.setLastNotifiedStatus(newStatus);
+            orderRepository.save(order);
+        }
 
         return ResponseEntity.ok(order);
     }

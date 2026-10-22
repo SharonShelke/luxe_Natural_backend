@@ -1,5 +1,6 @@
 package com.lichtluxe.backend.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -9,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Order entity representing a completed purchase.
+ * Order entity representing a customer purchase with fulfilment and tracking details.
  */
 @Entity
 @Table(name = "orders")
@@ -27,6 +28,7 @@ public class Order {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler", "password"})
     private User user;
 
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
@@ -66,6 +68,21 @@ public class Order {
     @Column(name = "payment_method")
     private String paymentMethod;
 
+    // Fulfilment & Tracking Information
+    @Column(name = "carrier")
+    private String carrier;
+
+    @Column(name = "tracking_number")
+    private String trackingNumber;
+
+    @Column(name = "tracking_url")
+    private String trackingUrl;
+
+    // Track the last status for which an email was dispatched (avoids duplicate notifications)
+    @Enumerated(EnumType.STRING)
+    @Column(name = "last_notified_status", length = 30)
+    private OrderStatus lastNotifiedStatus;
+
     @Column(name = "created_at", updatable = false)
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();
@@ -90,7 +107,9 @@ public class Order {
         CONFIRMED,
         PROCESSING,
         SHIPPED,
+        OUT_FOR_DELIVERY,
         DELIVERED,
-        CANCELLED
+        CANCELLED,
+        REFUNDED
     }
 }

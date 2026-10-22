@@ -6,6 +6,7 @@ import com.lichtluxe.backend.repository.CartRepository;
 import com.lichtluxe.backend.repository.OrderRepository;
 import com.lichtluxe.backend.repository.ProductRepository;
 import com.lichtluxe.backend.repository.UserRepository;
+import com.lichtluxe.backend.service.EmailService;
 import com.paypal.core.PayPalHttpClient;
 import com.paypal.http.HttpResponse;
 import com.paypal.orders.AmountBreakdown;
@@ -29,7 +30,7 @@ import java.util.*;
 
 /**
  * PayPal payment gateway controller.
- * Handles order creation and capture for the checkout flow.
+ * Handles order creation, capture, and automated confirmation email dispatch.
  */
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
@@ -51,16 +52,15 @@ public class PayPalController {
     @Autowired
     private ProductRepository productRepository;
 
+    @Autowired
+    private EmailService emailService;
+
     private User getCurrentUser() {
         String email = SecurityContextHolder.getContext().getAuthentication().getName();
         return userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found: " + email));
     }
 
-    /**
-     * Step 1: Create a PayPal order.
-     * Can calculate from the DB cart or from payload items if provided.
-     */
     @PostMapping("/create-order")
     public ResponseEntity<?> createOrder(@RequestBody(required = false) Map<String, Object> payload) {
         try {
@@ -68,7 +68,6 @@ public class PayPalController {
             BigDecimal total = BigDecimal.ZERO;
             List<Item> paypalItems = new ArrayList<>();
 
-            // 1. Check if payload has items or amount passed directly from frontend
             if (payload != null && payload.containsKey("items") && payload.get("items") instanceof List) {
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
@@ -88,7 +87,6 @@ public class PayPalController {
                             .category("PHYSICAL_GOODS"));
                 }
             } else if (payload != null && payload.containsKey("amount") && payload.get("amount") != null) {
-                // Total amount passed directly
                 Object amt = payload.get("amount");
                 total = amt instanceof Number
                         ? BigDecimal.valueOf(((Number) amt).doubleValue()).setScale(2, RoundingMode.HALF_UP)
@@ -99,7 +97,6 @@ public class PayPalController {
                         .quantity("1")
                         .category("PHYSICAL_GOODS"));
             } else {
-                // Fallback to database cart
                 Optional<Cart> cartOpt = cartRepository.findByUser(user);
                 if (cartOpt.isPresent() && !cartOpt.get().getItems().isEmpty()) {
                     Cart cart = cartOpt.get();
@@ -115,7 +112,6 @@ public class PayPalController {
                 }
             }
 
-            // Ensure valid total
             if (total.compareTo(BigDecimal.ZERO) <= 0) {
                 return ResponseEntity.badRequest()
                         .body(new MessageResponse("Order amount must be greater than zero. Cart may be empty."));
@@ -123,7 +119,6 @@ public class PayPalController {
 
             total = total.setScale(2, RoundingMode.HALF_UP);
 
-            // Build PayPal order request
             com.paypal.orders.OrderRequest orderRequest = new com.paypal.orders.OrderRequest();
             orderRequest.checkoutPaymentIntent("CAPTURE");
 
@@ -137,7 +132,6 @@ public class PayPalController {
                     .description("LICHT LUXE NATURALS Order — Made in LOVEWORLD");
 
             orderRequest.purchaseUnits(Collections.singletonList(purchaseUnit));
-
             orderRequest.applicationContext(new ApplicationContext()
                     .brandName("LICHT LUXE NATURALS")
                     .landingPage("BILLING")
@@ -165,9 +159,6 @@ public class PayPalController {
         }
     }
 
-    /**
-     * Step 2: Capture a PayPal order after buyer approval.
-     */
     @PostMapping("/capture-order/{paypalOrderId}")
     public ResponseEntity<?> captureOrder(
             @PathVariable String paypalOrderId,
@@ -187,15 +178,15 @@ public class PayPalController {
             User user = getCurrentUser();
             BigDecimal total = BigDecimal.ZERO;
 
-            com.lichtluxe.backend.entity.Order order = com.lichtluxe.backend.entity.Order.builder()
+            Order order = Order.builder()
                     .orderNumber("LLN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
                     .user(user)
                     .paypalOrderId(paypalOrderId)
                     .paymentMethod("PAYPAL")
-                    .status(com.lichtluxe.backend.entity.Order.OrderStatus.PAID)
+                    .status(Order.OrderStatus.CONFIRMED)
+                    .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
                     .build();
 
-            // Extract shipping if provided
             if (payload != null && payload.containsKey("shippingInfo") && payload.get("shippingInfo") instanceof Map) {
                 @SuppressWarnings("unchecked")
                 Map<String, String> sInfo = (Map<String, String>) payload.get("shippingInfo");
@@ -204,9 +195,11 @@ public class PayPalController {
                 order.setShippingCity(sInfo.get("shippingCity"));
                 order.setShippingPostcode(sInfo.get("shippingPostcode"));
                 order.setShippingPhone(sInfo.get("shippingPhone"));
+            } else {
+                order.setShippingName(user.getFirstName() + " " + user.getLastName());
+                order.setShippingPhone(user.getPhone());
             }
 
-            // Populate items from payload or DB cart
             if (payload != null && payload.containsKey("items") && payload.get("items") instanceof List) {
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
@@ -224,7 +217,6 @@ public class PayPalController {
                         product = productRepository.findById(prodId).orElse(null);
                     }
                     if (product == null) {
-                        // Find by name if ID was not matched
                         List<Product> allProds = productRepository.findAll();
                         for (Product p : allProds) {
                             if (p.getName().equalsIgnoreCase(prodName)) {
@@ -234,26 +226,25 @@ public class PayPalController {
                         }
                     }
 
-                    if (product != null) {
-                        OrderItem orderItem = OrderItem.builder()
-                                .product(product)
-                                .productName(product.getName())
-                                .quantity(qty)
-                                .unitPrice(price)
-                                .lineTotal(price.multiply(BigDecimal.valueOf(qty)))
-                                .build();
-                        order.addItem(orderItem);
-                        total = total.add(orderItem.getLineTotal());
-                    }
+                    OrderItem orderItem = OrderItem.builder()
+                            .product(product)
+                            .productName(prodName)
+                            .quantity(qty)
+                            .unitPrice(price)
+                            .lineTotal(price.multiply(BigDecimal.valueOf(qty)))
+                            .build();
+                    order.addItem(orderItem);
+                    total = total.add(orderItem.getLineTotal());
                 }
             }
 
-            // If no items were added from payload, check DB cart
             if (order.getItems().isEmpty()) {
                 Optional<Cart> cartOpt = cartRepository.findByUser(user);
                 if (cartOpt.isPresent()) {
                     Cart cart = cartOpt.get();
                     for (CartItem cartItem : cart.getItems()) {
+                        BigDecimal itemPrice = cartItem.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                        total = total.add(itemPrice.multiply(BigDecimal.valueOf(cartItem.getQuantity())));
                         OrderItem orderItem = OrderItem.builder()
                                 .product(cartItem.getProduct())
                                 .productName(cartItem.getProduct().getName())
@@ -262,9 +253,7 @@ public class PayPalController {
                                 .lineTotal(cartItem.getUnitPrice().multiply(BigDecimal.valueOf(cartItem.getQuantity())))
                                 .build();
                         order.addItem(orderItem);
-                        total = total.add(orderItem.getLineTotal());
                     }
-                    // Clear DB cart
                     cart.getItems().clear();
                     cartRepository.save(cart);
                 }
@@ -279,6 +268,9 @@ public class PayPalController {
 
             order.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
             orderRepository.save(order);
+
+            // 3. Automated Order Confirmation Email triggered from confirmed DB state
+            emailService.sendOrderConfirmationEmail(order);
 
             Map<String, Object> result = new HashMap<>();
             result.put("orderNumber", order.getOrderNumber());
