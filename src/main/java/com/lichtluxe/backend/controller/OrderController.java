@@ -130,14 +130,13 @@ public class OrderController {
             order.setOrderNotes(request.getNotes());
         }
 
-        orderRepository.save(order);
-
         // Only send notification if status changed and hasn't been notified yet to avoid duplicate emails
         if (order.getLastNotifiedStatus() == null || !order.getLastNotifiedStatus().equals(newStatus)) {
             emailService.sendOrderStatusEmail(order, newStatus);
             order.setLastNotifiedStatus(newStatus);
-            orderRepository.save(order);
         }
+
+        orderRepository.save(order);
 
         return ResponseEntity.ok(order);
     }

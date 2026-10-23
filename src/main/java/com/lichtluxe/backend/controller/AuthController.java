@@ -74,18 +74,28 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@Valid @RequestBody SignupRequest signUpRequest) {
-        if (userRepository.existsByEmail(signUpRequest.getEmail())) {
+        String cleanEmail = signUpRequest.getEmail().trim().toLowerCase();
+        if (userRepository.existsByEmailIgnoreCase(cleanEmail)) {
             return ResponseEntity
                     .badRequest()
-                    .body(new MessageResponse("Error: Email is already registered! Please sign in or reset your password."));
+                    .body(new MessageResponse("Error: An account with this email address already exists! Please sign in."));
+        }
+
+        if (signUpRequest.getPhone() != null && !signUpRequest.getPhone().trim().isBlank()) {
+            String cleanPhone = signUpRequest.getPhone().trim();
+            if (userRepository.existsByPhone(cleanPhone)) {
+                return ResponseEntity
+                        .badRequest()
+                        .body(new MessageResponse("Error: An account with this phone number already exists! Please sign in."));
+            }
         }
 
         // Create new user's account
         User user = User.builder()
                 .firstName(signUpRequest.getFirstName())
                 .lastName(signUpRequest.getLastName())
-                .email(signUpRequest.getEmail())
-                .phone(signUpRequest.getPhone())
+                .email(cleanEmail)
+                .phone(signUpRequest.getPhone() != null ? signUpRequest.getPhone().trim() : null)
                 .password(encoder.encode(signUpRequest.getPassword()))
                 .role(User.Role.CUSTOMER)
                 .build();

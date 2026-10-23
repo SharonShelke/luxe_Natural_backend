@@ -12,4 +12,6 @@ import java.util.Optional;
 public interface OrderRepository extends JpaRepository<Order, Long> {
     List<Order> findByUserOrderByCreatedAtDesc(User user);
     Optional<Order> findByOrderNumber(String orderNumber);
+    Optional<Order> findByPaypalOrderId(String paypalOrderId);
+    Boolean existsByPaypalOrderId(String paypalOrderId);
 }

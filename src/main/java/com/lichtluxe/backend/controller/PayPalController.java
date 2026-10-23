@@ -175,6 +175,19 @@ public class PayPalController {
                         .body(new MessageResponse("Payment not completed. Status: " + paypalOrder.status()));
             }
 
+            // Prevent duplicate order creation if already captured
+            Optional<Order> existingOrder = orderRepository.findByPaypalOrderId(paypalOrderId);
+            if (existingOrder.isPresent()) {
+                Order ord = existingOrder.get();
+                Map<String, Object> dupResult = new HashMap<>();
+                dupResult.put("orderNumber", ord.getOrderNumber());
+                dupResult.put("totalAmount", ord.getTotalAmount().toString());
+                dupResult.put("status", ord.getStatus().name());
+                dupResult.put("paypalOrderId", paypalOrderId);
+                dupResult.put("message", "Order already processed.");
+                return ResponseEntity.ok(dupResult);
+            }
+
             User user = getCurrentUser();
             BigDecimal total = BigDecimal.ZERO;
 

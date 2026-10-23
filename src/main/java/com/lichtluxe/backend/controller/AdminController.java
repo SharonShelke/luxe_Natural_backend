@@ -110,11 +110,30 @@ public class AdminController {
             @RequestBody Map<String, Object> payload,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
 
-        String orderNumber = "LN-" + (1080 + orderRepository.count() + 1);
+        User orderUser = null;
+        if (payload.containsKey("customerEmail") && payload.get("customerEmail") != null) {
+            orderUser = userRepository.findByEmailIgnoreCase(String.valueOf(payload.get("customerEmail")).trim()).orElse(null);
+        }
+        if (orderUser == null) {
+            orderUser = userRepository.findByEmailIgnoreCase("sharonshelke1@gmail.com").orElse(null);
+        }
+        if (orderUser == null) {
+            orderUser = userRepository.findAll().stream().findFirst().orElse(null);
+        }
+
+        // Generate guaranteed unique order number without duplicates
+        String orderNumber;
+        long seq = orderRepository.count() + 1;
+        do {
+            orderNumber = "LN-" + (1080 + seq);
+            seq++;
+        } while (orderRepository.findByOrderNumber(orderNumber).isPresent());
+
         BigDecimal total = BigDecimal.valueOf(payload.containsKey("total") ? ((Number) payload.get("total")).doubleValue() : 24.00);
 
         Order order = Order.builder()
                 .orderNumber(orderNumber)
+                .user(orderUser)
                 .totalAmount(total)
                 .status(Order.OrderStatus.CONFIRMED)
                 .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
@@ -225,8 +244,14 @@ public class AdminController {
             return ResponseEntity.badRequest().body(new MessageResponse("Email is required"));
         }
 
-        if (userRepository.existsByEmail(email.trim().toLowerCase())) {
-            return ResponseEntity.badRequest().body(new MessageResponse("Email already registered!"));
+        String cleanEmail = email.trim().toLowerCase();
+        if (userRepository.existsByEmailIgnoreCase(cleanEmail)) {
+            return ResponseEntity.badRequest().body(new MessageResponse("An account with this email address already exists!"));
+        }
+
+        String phone = payload.get("phone");
+        if (phone != null && !phone.trim().isBlank() && userRepository.existsByPhone(phone.trim())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("An account with this phone number already exists!"));
         }
 
         String rawPassword = payload.getOrDefault("password", "Luxe@123&");
@@ -236,8 +261,8 @@ public class AdminController {
         User user = User.builder()
                 .firstName(payload.getOrDefault("firstName", "Admin"))
                 .lastName(payload.getOrDefault("lastName", "User"))
-                .email(email.trim().toLowerCase())
-                .phone(payload.getOrDefault("phone", ""))
+                .email(cleanEmail)
+                .phone(phone != null && !phone.trim().isBlank() ? phone.trim() : null)
                 .password(passwordEncoder.encode(rawPassword))
                 .role(role)
                 .isActive(true)
