@@ -272,4 +272,15 @@ public class AdminController {
 
         return ResponseEntity.ok(new MessageResponse("Successfully created user " + user.getEmail() + " with role " + role.name()));
     }
+
+    @Autowired
+    private com.lichtluxe.backend.repository.EmailLogRepository emailLogRepository;
+
+    @GetMapping("/email-logs")
+    public ResponseEntity<?> getEmailLogs(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (!verifyAdminAccess(authHeader)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new MessageResponse("Unauthorized admin access."));
+        }
+        return ResponseEntity.ok(emailLogRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")));
+    }
 }
