@@ -55,10 +55,15 @@ public class PayPalController {
     @Autowired
     private EmailService emailService;
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PayPalController.class);
+
     private User getCurrentUser() {
-        String email = SecurityContextHolder.getContext().getAuthentication().getName();
-        return userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found: " + email));
+        org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
+            throw new com.lichtluxe.backend.exception.UnauthorizedException("You must be logged in to process payments.");
+        }
+        return userRepository.findByEmail(auth.getName())
+                .orElseThrow(() -> new com.lichtluxe.backend.exception.UnauthorizedException("User account not found: " + auth.getName()));
     }
 
     @PostMapping("/create-order")

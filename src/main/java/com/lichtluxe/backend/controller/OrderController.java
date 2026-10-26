@@ -36,8 +36,12 @@ public class OrderController {
     private EmailService emailService;
 
     private User getCurrentUser() {
-        String email = SecurityContextHolder.getContext().getAuthentication().getName();
-        return userRepository.findByEmail(email).orElseThrow(() -> new RuntimeException("User not found"));
+        org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
+            throw new com.lichtluxe.backend.exception.UnauthorizedException("You must be signed in to perform this action.");
+        }
+        return userRepository.findByEmail(auth.getName())
+                .orElseThrow(() -> new com.lichtluxe.backend.exception.ResourceNotFoundException("User account not found: " + auth.getName()));
     }
 
     @GetMapping
@@ -47,8 +51,14 @@ public class OrderController {
 
     @GetMapping("/{id}")
     public ResponseEntity<?> getOrderById(@PathVariable Long id) {
+        User user = getCurrentUser();
         Order order = orderRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Order not found with id: " + id));
+                .orElseThrow(() -> new com.lichtluxe.backend.exception.ResourceNotFoundException("Order not found with id: " + id));
+
+        // IDOR Protection: verify order belongs to current user or user is ADMIN
+        if (!order.getUser().getId().equals(user.getId()) && user.getRole() != User.Role.ADMIN) {
+            throw new org.springframework.security.access.AccessDeniedException("You do not have permission to view this order.");
+        }
         return ResponseEntity.ok(order);
     }
 

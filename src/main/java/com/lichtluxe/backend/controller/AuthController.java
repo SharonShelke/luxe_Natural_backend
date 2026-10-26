@@ -48,28 +48,48 @@ public class AuthController {
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AuthController.class);
+
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest) {
-        Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(loginRequest.getEmail(), loginRequest.getPassword()));
+        if (loginRequest == null || loginRequest.getEmail() == null || loginRequest.getPassword() == null) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Email and password are required."));
+        }
+        try {
+            Authentication authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(loginRequest.getEmail().trim().toLowerCase(), loginRequest.getPassword()));
 
-        SecurityContextHolder.getContext().setAuthentication(authentication);
-        String jwt = jwtUtils.generateJwtToken(authentication);
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+            String jwt = jwtUtils.generateJwtToken(authentication);
 
-        UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
-        String role = userDetails.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .findFirst()
-                .orElse("ROLE_CUSTOMER");
+            UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+            String role = userDetails.getAuthorities().stream()
+                    .map(GrantedAuthority::getAuthority)
+                    .findFirst()
+                    .orElse("ROLE_CUSTOMER");
 
-        User user = userRepository.findByEmail(userDetails.getEmail()).orElseThrow();
+            User user = userRepository.findByEmail(userDetails.getEmail())
+                    .orElseThrow(() -> new com.lichtluxe.backend.exception.UnauthorizedException("User account not found."));
 
-        return ResponseEntity.ok(new JwtResponse(jwt,
-                userDetails.getId(),
-                userDetails.getEmail(),
-                user.getFirstName(),
-                user.getLastName(),
-                role));
+            return ResponseEntity.ok(new JwtResponse(jwt,
+                    userDetails.getId(),
+                    userDetails.getEmail(),
+                    user.getFirstName(),
+                    user.getLastName(),
+                    role));
+        } catch (org.springframework.security.authentication.BadCredentialsException e) {
+            log.warn("Failed login attempt for: {}", loginRequest.getEmail());
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(new MessageResponse("Invalid email or password. Please verify credentials."));
+        } catch (org.springframework.security.authentication.DisabledException | org.springframework.security.authentication.LockedException e) {
+            log.warn("Blocked login for disabled/locked user: {}", loginRequest.getEmail());
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(new MessageResponse("Account is locked or disabled. Please contact customer support."));
+        } catch (Exception e) {
+            log.error("Login unexpected error: {}", e.getMessage(), e);
+            return ResponseEntity.status(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new MessageResponse("An error occurred during authentication. Please try again."));
+        }
     }
 
     @PostMapping("/register")
