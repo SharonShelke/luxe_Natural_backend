@@ -449,6 +449,10 @@ public class PayPalController {
                             .build();
                     order.addItem(orderItem);
                     total = total.add(orderItem.getLineTotal());
+                    if (product != null) {
+                        product.setStockQuantity(Math.max(0, product.getStockQuantity() - qty));
+                        productRepository.save(product);
+                    }
                 }
             }
 
@@ -480,6 +484,8 @@ public class PayPalController {
                         : new BigDecimal(String.valueOf(amt));
             }
 
+            order.setCarrier("Royal Mail Tracked 24");
+            order.setTrackingNumber("RM" + (System.currentTimeMillis() % 1000000000) + "GB");
             order.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
             orderRepository.save(order);
 
