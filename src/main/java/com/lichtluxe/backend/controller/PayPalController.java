@@ -1,7 +1,12 @@
 package com.lichtluxe.backend.controller;
 
 import com.lichtluxe.backend.dto.MessageResponse;
-import com.lichtluxe.backend.entity.*;
+import com.lichtluxe.backend.entity.Cart;
+import com.lichtluxe.backend.entity.CartItem;
+import com.lichtluxe.backend.entity.Order;
+import com.lichtluxe.backend.entity.OrderItem;
+import com.lichtluxe.backend.entity.Product;
+import com.lichtluxe.backend.entity.User;
 import com.lichtluxe.backend.repository.CartRepository;
 import com.lichtluxe.backend.repository.OrderRepository;
 import com.lichtluxe.backend.repository.ProductRepository;
@@ -21,6 +26,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
@@ -29,8 +35,9 @@ import java.math.RoundingMode;
 import java.util.*;
 
 /**
- * PayPal payment gateway controller.
- * Handles order creation, capture, and automated confirmation email dispatch.
+ * Controller for end-to-end PayPal checkout flows.
+ * Supports both registered customers and guest checkout clients.
+ * Every purchase and client is permanently recorded in the database and visible in the Admin Portal.
  */
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
@@ -55,21 +62,23 @@ public class PayPalController {
     @Autowired
     private EmailService emailService;
 
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PayPalController.class);
 
-    private User getCurrentUser() {
+    private User getOptionalCurrentUser() {
         org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
-            throw new com.lichtluxe.backend.exception.UnauthorizedException("You must be logged in to process payments.");
+            return null;
         }
-        return userRepository.findByEmail(auth.getName())
-                .orElseThrow(() -> new com.lichtluxe.backend.exception.UnauthorizedException("User account not found: " + auth.getName()));
+        return userRepository.findByEmail(auth.getName()).orElse(null);
     }
 
     @PostMapping("/create-order")
     public ResponseEntity<?> createOrder(@RequestBody(required = false) Map<String, Object> payload) {
         try {
-            User user = getCurrentUser();
+            User user = getOptionalCurrentUser();
             BigDecimal total = BigDecimal.ZERO;
             List<Item> paypalItems = new ArrayList<>();
 
@@ -82,7 +91,8 @@ public class PayPalController {
                     BigDecimal price = priceObj instanceof Number
                             ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
                             : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
-                                        int qty = 1;
+
+                    int qty = 1;
                     if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
                         Object qObj = itemData.get("quantity");
                         if (qObj instanceof Number) {
@@ -113,7 +123,7 @@ public class PayPalController {
                         .unitAmount(new Money().currencyCode("GBP").value(total.toString()))
                         .quantity("1")
                         .category("PHYSICAL_GOODS"));
-            } else {
+            } else if (user != null) {
                 Optional<Cart> cartOpt = cartRepository.findByUser(user);
                 if (cartOpt.isPresent() && !cartOpt.get().getItems().isEmpty()) {
                     Cart cart = cartOpt.get();
@@ -146,7 +156,7 @@ public class PayPalController {
                             .amountBreakdown(new AmountBreakdown()
                                     .itemTotal(new Money().currencyCode("GBP").value(total.toString()))))
                     .items(paypalItems)
-                    .description("LICHT LUXE NATURALS Order — Made in LOVEWORLD");
+                    .description("LICHT LUXE NATURALS Order â€” Made in LOVEWORLD");
 
             orderRequest.purchaseUnits(Collections.singletonList(purchaseUnit));
             orderRequest.applicationContext(new ApplicationContext()
@@ -205,7 +215,73 @@ public class PayPalController {
                 return ResponseEntity.ok(dupResult);
             }
 
-            User user = getCurrentUser();
+            // Identify or auto-create the Client / Customer
+            User user = getOptionalCurrentUser();
+            String shippingName = null;
+            String shippingEmail = null;
+            String shippingPhone = null;
+            String shippingAddress = null;
+            String shippingCity = null;
+            String shippingPostcode = null;
+
+            if (payload != null && payload.containsKey("shippingInfo") && payload.get("shippingInfo") instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, String> sInfo = (Map<String, String>) payload.get("shippingInfo");
+                shippingName = sInfo.get("shippingName");
+                shippingEmail = sInfo.get("shippingEmail");
+                shippingPhone = sInfo.get("shippingPhone");
+                shippingAddress = sInfo.get("shippingAddress");
+                shippingCity = sInfo.get("shippingCity");
+                shippingPostcode = sInfo.get("shippingPostcode");
+            }
+
+            // Fallback to PayPal payer info if guest didn't supply email/name
+            if (paypalOrder.payer() != null) {
+                if ((shippingEmail == null || shippingEmail.isBlank()) && paypalOrder.payer().email() != null) {
+                    shippingEmail = paypalOrder.payer().email();
+                }
+                if ((shippingName == null || shippingName.isBlank()) && paypalOrder.payer().name() != null) {
+                    String gName = paypalOrder.payer().name().givenName() != null ? paypalOrder.payer().name().givenName() : "";
+                    String sName = paypalOrder.payer().name().surname() != null ? paypalOrder.payer().name().surname() : "";
+                    shippingName = (gName + " " + sName).trim();
+                }
+            }
+
+            if (user == null) {
+                String clientEmail = (shippingEmail != null && !shippingEmail.isBlank())
+                        ? shippingEmail.trim().toLowerCase()
+                        : "guest." + paypalOrderId.toLowerCase() + "@loveworldluxe.com";
+
+                Optional<User> clientOpt = userRepository.findByEmail(clientEmail);
+                if (clientOpt.isPresent()) {
+                    user = clientOpt.get();
+                } else {
+                    String firstName = "Customer";
+                    String lastName = "";
+                    if (shippingName != null && !shippingName.isBlank()) {
+                        String[] parts = shippingName.trim().split("\\s+", 2);
+                        firstName = parts[0];
+                        if (parts.length > 1) lastName = parts[1];
+                    }
+
+                    String clientPhone = shippingPhone != null ? shippingPhone.trim() : "";
+                    if (!clientPhone.isBlank() && userRepository.existsByPhone(clientPhone)) {
+                        clientPhone = ""; // leave blank if collision
+                    }
+
+                    User newClient = User.builder()
+                            .firstName(firstName)
+                            .lastName(lastName)
+                            .email(clientEmail)
+                            .phone(clientPhone)
+                            .password(passwordEncoder.encode(UUID.randomUUID().toString()))
+                            .role(User.Role.CUSTOMER)
+                            .isActive(true)
+                            .build();
+                    user = userRepository.save(newClient);
+                }
+            }
+
             BigDecimal total = BigDecimal.ZERO;
 
             Order order = Order.builder()
@@ -215,20 +291,12 @@ public class PayPalController {
                     .paymentMethod("PAYPAL")
                     .status(Order.OrderStatus.CONFIRMED)
                     .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
+                    .shippingName(shippingName != null && !shippingName.isBlank() ? shippingName : user.getFirstName() + " " + user.getLastName())
+                    .shippingPhone(shippingPhone != null && !shippingPhone.isBlank() ? shippingPhone : user.getPhone())
+                    .shippingAddress(shippingAddress)
+                    .shippingCity(shippingCity)
+                    .shippingPostcode(shippingPostcode)
                     .build();
-
-            if (payload != null && payload.containsKey("shippingInfo") && payload.get("shippingInfo") instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, String> sInfo = (Map<String, String>) payload.get("shippingInfo");
-                order.setShippingName(sInfo.get("shippingName"));
-                order.setShippingAddress(sInfo.get("shippingAddress"));
-                order.setShippingCity(sInfo.get("shippingCity"));
-                order.setShippingPostcode(sInfo.get("shippingPostcode"));
-                order.setShippingPhone(sInfo.get("shippingPhone"));
-            } else {
-                order.setShippingName(user.getFirstName() + " " + user.getLastName());
-                order.setShippingPhone(user.getPhone());
-            }
 
             if (payload != null && payload.containsKey("items") && payload.get("items") instanceof List) {
                 @SuppressWarnings("unchecked")
@@ -300,7 +368,7 @@ public class PayPalController {
                 }
             }
 
-            if (order.getItems().isEmpty()) {
+            if (order.getItems().isEmpty() && user != null) {
                 Optional<Cart> cartOpt = cartRepository.findByUser(user);
                 if (cartOpt.isPresent()) {
                     Cart cart = cartOpt.get();
@@ -331,7 +399,7 @@ public class PayPalController {
             order.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
             orderRepository.save(order);
 
-            // 3. Automated Order Confirmation Email triggered from confirmed DB state
+            // Automated Order Confirmation Email triggered from confirmed DB state
             emailService.sendOrderConfirmationEmail(order);
 
             Map<String, Object> result = new HashMap<>();
