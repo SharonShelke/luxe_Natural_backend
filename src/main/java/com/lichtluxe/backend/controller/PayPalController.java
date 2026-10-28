@@ -1,4 +1,4 @@
-﻿package com.lichtluxe.backend.controller;
+package com.lichtluxe.backend.controller;
 
 import com.lichtluxe.backend.dto.MessageResponse;
 import com.lichtluxe.backend.entity.Cart;
@@ -426,7 +426,6 @@ public class PayPalController {
                         product = productRepository.findById(prodId).orElse(null);
                     }
                     if (product == null) {
-                        String slug = String.valueOf(itemData.getOrDefault("id", ""));
                         if (!slug.isBlank()) {
                             product = productRepository.findBySlug(slug).orElse(null);
                         }
