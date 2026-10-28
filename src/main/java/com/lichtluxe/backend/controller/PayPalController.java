@@ -82,7 +82,19 @@ public class PayPalController {
                     BigDecimal price = priceObj instanceof Number
                             ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
                             : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
-                    int qty = itemData.containsKey("quantity") ? ((Number) itemData.get("quantity")).intValue() : 1;
+                                        int qty = 1;
+                    if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
+                        Object qObj = itemData.get("quantity");
+                        if (qObj instanceof Number) {
+                            qty = ((Number) qObj).intValue();
+                        } else {
+                            try {
+                                qty = Integer.parseInt(String.valueOf(qObj));
+                            } catch (Exception ignored) {
+                                qty = 1;
+                            }
+                        }
+                    }
 
                     total = total.add(price.multiply(BigDecimal.valueOf(qty)));
                     paypalItems.add(new Item()
@@ -139,7 +151,7 @@ public class PayPalController {
             orderRequest.purchaseUnits(Collections.singletonList(purchaseUnit));
             orderRequest.applicationContext(new ApplicationContext()
                     .brandName("LICHT LUXE NATURALS")
-                    .landingPage("BILLING")
+                    .landingPage("LOGIN")
                     .userAction("PAY_NOW")
                     .shippingPreference("NO_SHIPPING"));
 
@@ -222,17 +234,49 @@ public class PayPalController {
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
                 for (Map<String, Object> itemData : itemsList) {
-                    Long prodId = itemData.containsKey("id") ? ((Number) itemData.get("id")).longValue() : null;
+                    Long prodId = null;
+                    if (itemData.containsKey("id") && itemData.get("id") != null) {
+                        Object idObj = itemData.get("id");
+                        if (idObj instanceof Number) {
+                            prodId = ((Number) idObj).longValue();
+                        } else {
+                            try {
+                                prodId = Long.parseLong(String.valueOf(idObj));
+                            } catch (Exception ignored) {
+                                prodId = null;
+                            }
+                        }
+                    }
+
                     String prodName = String.valueOf(itemData.getOrDefault("name", "Product"));
                     Object priceObj = itemData.get("price");
                     BigDecimal price = priceObj instanceof Number
                             ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
                             : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
-                    int qty = itemData.containsKey("quantity") ? ((Number) itemData.get("quantity")).intValue() : 1;
+
+                    int qty = 1;
+                    if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
+                        Object qtyObj = itemData.get("quantity");
+                        if (qtyObj instanceof Number) {
+                            qty = ((Number) qtyObj).intValue();
+                        } else {
+                            try {
+                                qty = Integer.parseInt(String.valueOf(qtyObj));
+                            } catch (Exception ignored) {
+                                qty = 1;
+                            }
+                        }
+                    }
 
                     Product product = null;
                     if (prodId != null) {
                         product = productRepository.findById(prodId).orElse(null);
+                    }
+                    if (product == null) {
+                        String slug = String.valueOf(itemData.getOrDefault("id", ""));
+                        if (!slug.isBlank()) {
+                            product = productRepository.findBySlug(slug).orElse(null);
+                        }
                     }
                     if (product == null) {
                         List<Product> allProds = productRepository.findAll();
