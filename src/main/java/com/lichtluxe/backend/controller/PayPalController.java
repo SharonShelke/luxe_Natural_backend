@@ -1,4 +1,4 @@
-package com.lichtluxe.backend.controller;
+﻿package com.lichtluxe.backend.controller;
 
 import com.lichtluxe.backend.dto.MessageResponse;
 import com.lichtluxe.backend.entity.Cart;
@@ -67,6 +67,95 @@ public class PayPalController {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PayPalController.class);
 
+    public static final Map<String, BigDecimal> OFFICIAL_PRICES = Map.of(
+            "pure-shea-butter", new BigDecimal("14.99"),
+            "pure-coconut-oil", new BigDecimal("11.99"),
+            "luxe-body-butter", new BigDecimal("18.99"),
+            "african-black-liquid-soap", new BigDecimal("12.99"),
+            "african-black-soap-jar", new BigDecimal("11.99"),
+            "luxe-trio-gift-set", new BigDecimal("39.99")
+    );
+
+    public BigDecimal resolveProductPrice(String prodId, String prodName, Object priceObj) {
+        if (prodId != null && OFFICIAL_PRICES.containsKey(prodId)) {
+            return OFFICIAL_PRICES.get(prodId);
+        }
+        if (prodId != null && !prodId.isBlank()) {
+            Optional<Product> prodOpt = productRepository.findBySlug(prodId);
+            if (prodOpt.isPresent()) {
+                return prodOpt.get().getPrice();
+            }
+        }
+        if (prodName != null && !prodName.isBlank()) {
+            String lower = prodName.toLowerCase();
+            if (lower.contains("gift set") || lower.contains("trio")) return OFFICIAL_PRICES.get("luxe-trio-gift-set");
+            if (lower.contains("shea")) return OFFICIAL_PRICES.get("pure-shea-butter");
+            if (lower.contains("coconut")) return OFFICIAL_PRICES.get("pure-coconut-oil");
+            if (lower.contains("body butter")) return OFFICIAL_PRICES.get("luxe-body-butter");
+            if (lower.contains("liquid")) return OFFICIAL_PRICES.get("african-black-liquid-soap");
+            if (lower.contains("black soap") || lower.contains("jar")) return OFFICIAL_PRICES.get("african-black-soap-jar");
+        }
+        if (priceObj != null) {
+            return priceObj instanceof Number
+                    ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
+                    : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.ZERO;
+    }
+
+    @PostMapping("/calculate")
+    public ResponseEntity<?> calculateOrderTotal(@RequestBody(required = false) Map<String, Object> payload) {
+        BigDecimal subtotal = BigDecimal.ZERO;
+        List<Map<String, Object>> itemBreakdown = new ArrayList<>();
+        int totalQuantity = 0;
+
+        if (payload != null && payload.containsKey("items") && payload.get("items") instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
+            for (Map<String, Object> itemData : itemsList) {
+                String id = String.valueOf(itemData.getOrDefault("id", ""));
+                String name = String.valueOf(itemData.getOrDefault("name", "Product"));
+                int qty = 1;
+                if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
+                    try {
+                        qty = Integer.parseInt(String.valueOf(itemData.get("quantity")));
+                    } catch (Exception ignored) { qty = 1; }
+                }
+                if (qty <= 0) continue;
+
+                BigDecimal unitPrice = resolveProductPrice(id, name, itemData.get("price"));
+                BigDecimal lineTotal = unitPrice.multiply(BigDecimal.valueOf(qty)).setScale(2, RoundingMode.HALF_UP);
+                subtotal = subtotal.add(lineTotal);
+                totalQuantity += qty;
+
+                Map<String, Object> line = new LinkedHashMap<>();
+                line.put("id", id);
+                line.put("name", name);
+                line.put("quantity", qty);
+                line.put("unitPrice", unitPrice);
+                line.put("lineTotal", lineTotal);
+                itemBreakdown.add(line);
+            }
+        }
+
+        subtotal = subtotal.setScale(2, RoundingMode.HALF_UP);
+        boolean isFreeShipping = subtotal.compareTo(new BigDecimal("50.00")) >= 0;
+        BigDecimal shipping = (isFreeShipping || subtotal.compareTo(BigDecimal.ZERO) == 0)
+                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+                : new BigDecimal("4.99");
+        BigDecimal total = subtotal.add(shipping).setScale(2, RoundingMode.HALF_UP);
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("subtotal", subtotal);
+        resp.put("shipping", shipping);
+        resp.put("isFreeShipping", isFreeShipping);
+        resp.put("total", total);
+        resp.put("currency", "GBP");
+        resp.put("itemCount", totalQuantity);
+        resp.put("items", itemBreakdown);
+        return ResponseEntity.ok(resp);
+    }
+
     private User getOptionalCurrentUser() {
         org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
@@ -86,11 +175,9 @@ public class PayPalController {
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
                 for (Map<String, Object> itemData : itemsList) {
+                    String id = String.valueOf(itemData.getOrDefault("id", ""));
                     String name = String.valueOf(itemData.getOrDefault("name", "Product"));
-                    Object priceObj = itemData.get("price");
-                    BigDecimal price = priceObj instanceof Number
-                            ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
-                            : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
+                    BigDecimal price = resolveProductPrice(id, name, itemData.get("price"));
 
                     int qty = 1;
                     if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
@@ -317,10 +404,8 @@ public class PayPalController {
                     }
 
                     String prodName = String.valueOf(itemData.getOrDefault("name", "Product"));
-                    Object priceObj = itemData.get("price");
-                    BigDecimal price = priceObj instanceof Number
-                            ? BigDecimal.valueOf(((Number) priceObj).doubleValue()).setScale(2, RoundingMode.HALF_UP)
-                            : new BigDecimal(String.valueOf(priceObj)).setScale(2, RoundingMode.HALF_UP);
+                    String slug = String.valueOf(itemData.getOrDefault("id", ""));
+                    BigDecimal price = resolveProductPrice(slug, prodName, itemData.get("price"));
 
                     int qty = 1;
                     if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
