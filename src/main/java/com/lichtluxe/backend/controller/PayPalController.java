@@ -150,7 +150,7 @@ public class PayPalController {
         resp.put("shipping", shipping);
         resp.put("isFreeShipping", isFreeShipping);
         resp.put("total", total);
-        resp.put("currency", "GBP");
+        resp.put("currency", "USD");
         resp.put("itemCount", totalQuantity);
         resp.put("items", itemBreakdown);
         return ResponseEntity.ok(resp);
@@ -170,6 +170,13 @@ public class PayPalController {
             User user = getOptionalCurrentUser();
             BigDecimal total = BigDecimal.ZERO;
             List<Item> paypalItems = new ArrayList<>();
+            String currency = "USD";
+            if (payload != null && payload.containsKey("currency") && payload.get("currency") != null) {
+                String c = String.valueOf(payload.get("currency")).trim();
+                if (!c.isBlank()) {
+                    currency = c.toUpperCase();
+                }
+            }
 
             if (payload != null && payload.containsKey("items") && payload.get("items") instanceof List) {
                 @SuppressWarnings("unchecked")
@@ -196,7 +203,7 @@ public class PayPalController {
                     total = total.add(price.multiply(BigDecimal.valueOf(qty)));
                     paypalItems.add(new Item()
                             .name(name.length() > 120 ? name.substring(0, 117) + "..." : name)
-                            .unitAmount(new Money().currencyCode("GBP").value(price.toString()))
+                            .unitAmount(new Money().currencyCode(currency).value(price.toString()))
                             .quantity(String.valueOf(qty))
                             .category("PHYSICAL_GOODS"));
                 }
@@ -207,7 +214,7 @@ public class PayPalController {
                         : new BigDecimal(String.valueOf(amt)).setScale(2, RoundingMode.HALF_UP);
                 paypalItems.add(new Item()
                         .name("LICHT LUXE NATURALS Order")
-                        .unitAmount(new Money().currencyCode("GBP").value(total.toString()))
+                        .unitAmount(new Money().currencyCode(currency).value(total.toString()))
                         .quantity("1")
                         .category("PHYSICAL_GOODS"));
             } else if (user != null) {
@@ -219,7 +226,7 @@ public class PayPalController {
                         total = total.add(itemPrice.multiply(BigDecimal.valueOf(cartItem.getQuantity())));
                         paypalItems.add(new Item()
                                 .name(cartItem.getProduct().getName())
-                                .unitAmount(new Money().currencyCode("GBP").value(itemPrice.toString()))
+                                .unitAmount(new Money().currencyCode(currency).value(itemPrice.toString()))
                                 .quantity(String.valueOf(cartItem.getQuantity()))
                                 .category("PHYSICAL_GOODS"));
                     }
@@ -238,12 +245,12 @@ public class PayPalController {
 
             PurchaseUnitRequest purchaseUnit = new PurchaseUnitRequest()
                     .amountWithBreakdown(new AmountWithBreakdown()
-                            .currencyCode("GBP")
+                            .currencyCode(currency)
                             .value(total.toString())
                             .amountBreakdown(new AmountBreakdown()
-                                    .itemTotal(new Money().currencyCode("GBP").value(total.toString()))))
+                                    .itemTotal(new Money().currencyCode(currency).value(total.toString()))))
                     .items(paypalItems)
-                    .description("LICHT LUXE NATURALS Order â€” Made in LOVEWORLD");
+                    .description("LICHT LUXE NATURALS Order - Made in LOVEWORLD");
 
             orderRequest.purchaseUnits(Collections.singletonList(purchaseUnit));
             orderRequest.applicationContext(new ApplicationContext()
