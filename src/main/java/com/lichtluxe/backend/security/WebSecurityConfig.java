@@ -67,6 +67,7 @@ public class WebSecurityConfig {
                     .requestMatchers("/api/admin/**").permitAll()
                     .requestMatchers("/api/paypal/**").permitAll()
                     .requestMatchers("/api/espees/**").permitAll()
+                    .requestMatchers("/api/orders/checkout").permitAll()
                     .anyRequest().authenticated()
             );
 

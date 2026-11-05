@@ -10,6 +10,7 @@ import java.util.Optional;
 @Repository
 public interface ProductRepository extends JpaRepository<Product, Long> {
     Optional<Product> findBySlug(String slug);
+    Optional<Product> findByName(String name);
     List<Product> findByIsActiveTrue();
     List<Product> findByCategory(Product.ProductCategory category);
 }
