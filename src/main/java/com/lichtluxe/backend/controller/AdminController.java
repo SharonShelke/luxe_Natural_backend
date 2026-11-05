@@ -221,7 +221,7 @@ public class AdminController {
         ));
     }
 
-    // --- 3. USER & TEAM ACCESS CONTROL (PROMOTE ADMIN) -----------------
+    // --- 3. USER MANAGEMENT & ACCESS CONTROL (MONITOR USERS & MAKE ADMIN) ---
     @GetMapping("/users")
     public ResponseEntity<?> getAllUsers(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         List<User> users = userRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
@@ -231,12 +231,29 @@ public class AdminController {
             map.put("id", u.getId());
             map.put("firstName", u.getFirstName());
             map.put("lastName", u.getLastName());
-            map.put("name", u.getFirstName() + " " + u.getLastName());
+            map.put("name", (u.getFirstName() != null ? u.getFirstName() : "") + " " + (u.getLastName() != null ? u.getLastName() : ""));
             map.put("email", u.getEmail());
             map.put("phone", u.getPhone() != null ? u.getPhone() : "");
             map.put("role", u.getRole() != null ? u.getRole().name() : "CUSTOMER");
             map.put("isActive", u.isActive());
             map.put("createdAt", u.getCreatedAt());
+
+            // Real purchase metrics
+            try {
+                List<Order> userOrders = orderRepository.findByUserOrderByCreatedAtDesc(u);
+                map.put("ordersCount", userOrders.size());
+                BigDecimal totalSpent = BigDecimal.ZERO;
+                for (Order o : userOrders) {
+                    if (o.getTotalAmount() != null) {
+                        totalSpent = totalSpent.add(o.getTotalAmount());
+                    }
+                }
+                map.put("totalSpent", totalSpent);
+            } catch (Exception ignored) {
+                map.put("ordersCount", 0);
+                map.put("totalSpent", BigDecimal.ZERO);
+            }
+
             response.add(map);
         }
         return ResponseEntity.ok(response);
@@ -254,7 +271,6 @@ public class AdminController {
 
         Optional<User> userOpt = userRepository.findByEmail(email.trim().toLowerCase());
         if (userOpt.isEmpty()) {
-            // Also check case-insensitive match
             List<User> all = userRepository.findAll();
             for (User u : all) {
                 if (u.getEmail().equalsIgnoreCase(email.trim())) {
@@ -272,7 +288,78 @@ public class AdminController {
         user.setRole(User.Role.ADMIN);
         userRepository.save(user);
 
-        return ResponseEntity.ok(new MessageResponse("User " + user.getEmail() + " is now an Administrator!"));
+        return ResponseEntity.ok(new MessageResponse("✨ User " + user.getEmail() + " is now an Administrator!"));
+    }
+
+    @PostMapping("/users/demote")
+    public ResponseEntity<?> demoteAdminToCustomer(
+            @RequestBody Map<String, String> payload,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+
+        String email = payload.get("email");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Email is required"));
+        }
+
+        String cleanEmail = email.trim().toLowerCase();
+        if ("sharonshelke1@gmail.com".equalsIgnoreCase(cleanEmail) || "sharon@lichtluxenaturals.org".equalsIgnoreCase(cleanEmail)) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Cannot demote primary root administrator!"));
+        }
+
+        Optional<User> userOpt = userRepository.findByEmail(cleanEmail);
+        if (userOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MessageResponse("No user found with email: " + email));
+        }
+
+        User user = userOpt.get();
+        user.setRole(User.Role.CUSTOMER);
+        userRepository.save(user);
+
+        return ResponseEntity.ok(new MessageResponse("User " + user.getEmail() + " has been changed to Customer role."));
+    }
+
+    @PutMapping("/users/{id}/toggle-status")
+    public ResponseEntity<?> toggleUserActiveStatus(
+            @PathVariable Long id,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+
+        Optional<User> userOpt = userRepository.findById(id);
+        if (userOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MessageResponse("User not found"));
+        }
+
+        User user = userOpt.get();
+        if ("sharonshelke1@gmail.com".equalsIgnoreCase(user.getEmail())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Cannot disable root administrator account!"));
+        }
+
+        user.setActive(!user.isActive());
+        userRepository.save(user);
+
+        return ResponseEntity.ok(Map.of(
+                "message", "User " + user.getEmail() + (user.isActive() ? " activated" : " locked/deactivated"),
+                "userId", user.getId(),
+                "isActive", user.isActive()
+        ));
+    }
+
+    @DeleteMapping("/users/{id}")
+    public ResponseEntity<?> deleteUser(
+            @PathVariable Long id,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+
+        Optional<User> userOpt = userRepository.findById(id);
+        if (userOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MessageResponse("User not found"));
+        }
+
+        User user = userOpt.get();
+        if ("sharonshelke1@gmail.com".equalsIgnoreCase(user.getEmail()) || user.getRole() == User.Role.ADMIN) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Cannot delete administrator accounts!"));
+        }
+
+        userRepository.delete(user);
+        return ResponseEntity.ok(new MessageResponse("User account #" + id + " (" + user.getEmail() + ") removed successfully."));
     }
 
     @PostMapping("/users/create")

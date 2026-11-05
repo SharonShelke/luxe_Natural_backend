@@ -49,8 +49,14 @@ public class EspeesController {
     @Value("${app.espees.api-key:}")
     private String espeesApiKey;
 
-    @Value("${app.espees.merchant-wallet:lichtluxenaturals}")
+    @Value("${app.espees.merchant-wallet:0x49e99dd6ec7b413867513052053161c3682d5506}")
     private String defaultMerchantWallet;
+
+    @Value("${app.espees.merchant-username:merchanttest01}")
+    private String merchantUsername;
+
+    @Value("${app.espees.merchant-code:ESPMER01}")
+    private String merchantCode;
 
     @Value("${app.frontend-url:https://lichtluxenaturals.org}")
     private String frontendUrl;
@@ -167,10 +173,12 @@ public class EspeesController {
     public ResponseEntity<?> getConfig() {
         Map<String, Object> config = new HashMap<>();
         config.put("merchantWallet", defaultMerchantWallet);
+        config.put("merchantUsername", merchantUsername);
+        config.put("merchantCode", merchantCode);
         config.put("exchangeRateUsdToEsp", 1.00);
         config.put("currency", "ESP");
         config.put("hasApiKey", espeesApiKey != null && !espeesApiKey.isBlank());
-        config.put("instructions", "Transfer exact ESP amount to merchant wallet @" + defaultMerchantWallet + " via Espees App");
+        config.put("instructions", "Transfer exact ESP amount to merchant wallet @" + merchantUsername + " (" + defaultMerchantWallet + ") via Espees App");
         return ResponseEntity.ok(config);
     }
 

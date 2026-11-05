@@ -21,7 +21,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.*;
+import org.springframework.beans.factory.annotation.Value;
 
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
@@ -47,6 +48,21 @@ public class AuthController {
     private EmailService emailService;
 
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    @Value("${app.kingschat.project-id:c4492f85-ffcf-46ad-97d4-4aa7fa0de03b}")
+    private String kingsChatProjectId;
+
+    @Value("${app.kingschat.client-id:c4492f85-ffcf-46ad-97d4-4aa7fa0de03b}")
+    private String kingsChatClientId;
+
+    @Value("${app.kingschat.api-key:bGMvMYE5ha5NBApyUgsJ2CXzA3PyUVXmRKUtzLxlKGw=}")
+    private String kingsChatApiKey;
+
+    @Value("${app.kingschat.redirect-url:https://lichtluxenaturals.org/}")
+    private String kingsChatRedirectUrl;
+
+    @Value("${app.kingschat.connect-url:https://connect.kingschat.online}")
+    private String kingsChatConnectUrl;
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AuthController.class);
 
@@ -233,5 +249,141 @@ public class AuthController {
         emailService.sendPasswordChangedEmail(user);
 
         return ResponseEntity.ok(new MessageResponse("Password has been reset successfully! You can now sign in with your new password."));
+    }
+
+    // ─── 3. KingsChat SSO Integration ──────────────────────────────────
+    @GetMapping("/kingschat/config")
+    public ResponseEntity<?> getKingsChatConfig() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("projectId", kingsChatProjectId);
+        config.put("clientId", kingsChatClientId);
+        config.put("scopes", List.of("profile"));
+        config.put("redirectUri", kingsChatRedirectUrl);
+        config.put("connectUrl", kingsChatConnectUrl);
+        return ResponseEntity.ok(config);
+    }
+
+    @PostMapping("/kingschat")
+    public ResponseEntity<?> loginWithKingsChat(@RequestBody Map<String, Object> payload) {
+        try {
+            String email = null;
+            String name = null;
+            String username = null;
+            String phone = null;
+            String avatarUrl = null;
+
+            // 1. If accessToken provided, query KingsChat Profile API
+            String accessToken = payload.containsKey("accessToken") && payload.get("accessToken") != null
+                    ? String.valueOf(payload.get("accessToken")) : null;
+
+            if (accessToken != null && !accessToken.isBlank()) {
+                try {
+                    org.springframework.web.client.RestTemplate restTemplate = new org.springframework.web.client.RestTemplate();
+                    org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                    headers.setBearerAuth(accessToken);
+                    headers.set("x-api-key", kingsChatApiKey);
+                    org.springframework.http.HttpEntity<?> entity = new org.springframework.http.HttpEntity<>(headers);
+
+                    String profileUrl = kingsChatConnectUrl + "/api/profile";
+                    org.springframework.http.ResponseEntity<Map> resp = restTemplate.exchange(
+                            profileUrl, org.springframework.http.HttpMethod.GET, entity, Map.class);
+
+                    if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
+                        Map<?, ?> body = resp.getBody();
+                        Map<?, ?> profile = body.containsKey("profile") && body.get("profile") instanceof Map
+                                ? (Map<?, ?>) body.get("profile") : body;
+                        Map<?, ?> userMap = profile.containsKey("user") && profile.get("user") instanceof Map
+                                ? (Map<?, ?>) profile.get("user") : profile;
+
+                        if (userMap.get("email") != null) email = String.valueOf(userMap.get("email"));
+                        if (userMap.get("name") != null) name = String.valueOf(userMap.get("name"));
+                        if (userMap.get("username") != null) username = String.valueOf(userMap.get("username"));
+                        if (userMap.get("phone_number") != null) phone = String.valueOf(userMap.get("phone_number"));
+                        if (userMap.get("avatar_url") != null) avatarUrl = String.valueOf(userMap.get("avatar_url"));
+                    }
+                } catch (Exception ex) {
+                    log.warn("KingsChat Profile API query note: {}", ex.getMessage());
+                }
+            }
+
+            // 2. Direct profile payload fallback
+            if (payload.containsKey("profile") && payload.get("profile") instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> p = (Map<String, Object>) payload.get("profile");
+                if (email == null && p.get("email") != null) email = String.valueOf(p.get("email"));
+                if (name == null && p.get("name") != null) name = String.valueOf(p.get("name"));
+                if (username == null && p.get("username") != null) username = String.valueOf(p.get("username"));
+                if (phone == null && p.get("phone") != null) phone = String.valueOf(p.get("phone"));
+                if (avatarUrl == null && p.get("avatarUrl") != null) avatarUrl = String.valueOf(p.get("avatarUrl"));
+            }
+
+            // Also check top-level fields
+            if (email == null && payload.get("email") != null) email = String.valueOf(payload.get("email"));
+            if (name == null && payload.get("name") != null) name = String.valueOf(payload.get("name"));
+            if (username == null && payload.get("username") != null) username = String.valueOf(payload.get("username"));
+
+            if ((email == null || email.isBlank()) && (username == null || username.isBlank())) {
+                return ResponseEntity.badRequest().body(new MessageResponse("KingsChat profile authentication could not resolve user identity."));
+            }
+
+            String finalEmail = (email != null && !email.isBlank())
+                    ? email.trim().toLowerCase()
+                    : (username.replaceAll("[^a-zA-Z0-9._-]", "") + "@kingschat.loveworld.org").toLowerCase();
+
+            String firstName = "KingsChat";
+            String lastName = "Member";
+            if (name != null && !name.isBlank()) {
+                String[] parts = name.trim().split("\\s+", 2);
+                firstName = parts[0];
+                if (parts.length > 1) lastName = parts[1];
+            } else if (username != null && !username.isBlank()) {
+                firstName = username;
+            }
+
+            // Check if user exists
+            Optional<User> existingUserOpt = userRepository.findByEmail(finalEmail);
+            User user;
+            if (existingUserOpt.isPresent()) {
+                user = existingUserOpt.get();
+                if (user.getFirstName() == null || user.getFirstName().isBlank() || "Customer".equals(user.getFirstName())) {
+                    user.setFirstName(firstName);
+                    user.setLastName(lastName);
+                    userRepository.save(user);
+                }
+            } else {
+                // Register new user via KingsChat SSO
+                user = User.builder()
+                        .firstName(firstName)
+                        .lastName(lastName)
+                        .email(finalEmail)
+                        .phone(phone != null && !phone.isBlank() ? phone : null)
+                        .password(encoder.encode(java.util.UUID.randomUUID().toString()))
+                        .role(User.Role.CUSTOMER)
+                        .isActive(true)
+                        .build();
+                user = userRepository.save(user);
+
+                try {
+                    emailService.sendWelcomeEmail(user);
+                } catch (Exception ignored) {}
+            }
+
+            // Generate JWT Token
+            String jwt = jwtUtils.generateTokenFromEmail(user.getEmail());
+
+            return ResponseEntity.ok(new JwtResponse(
+                    jwt,
+                    user.getId(),
+                    user.getEmail(),
+                    user.getFirstName(),
+                    user.getLastName(),
+                    user.getRole() != null ? user.getRole().name() : "ROLE_CUSTOMER"
+            ));
+
+        } catch (Exception e) {
+            log.error("KingsChat authentication error", e);
+            return ResponseEntity.status(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new MessageResponse("KingsChat authentication failed: " + e.getMessage()));
+        }
     }
 }
