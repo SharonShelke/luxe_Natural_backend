@@ -14,16 +14,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.*;
 
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
 @RequestMapping("/api/admin")
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminController {
 
     @Autowired
@@ -44,22 +47,20 @@ public class AdminController {
     @Autowired
     private JwtUtils jwtUtils;
 
-    private boolean verifyAdminAccess(String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+    @Autowired
+    private com.lichtluxe.backend.repository.EmailLogRepository emailLogRepository;
+
+    private boolean verifyAdminAccess() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
             return false;
         }
-        String jwt = authHeader.substring(7);
-        if (!jwtUtils.validateJwtToken(jwt)) {
-            return false;
-        }
-        String email = jwtUtils.getUserNameFromJwtToken(jwt);
-        Optional<User> userOpt = userRepository.findByEmail(email);
-        return userOpt.isPresent() && userOpt.get().getRole() == User.Role.ADMIN;
+        return auth.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
     }
 
     // --- 1. REAL ORDERS MANAGEMENT -------------------------------------
     @GetMapping("/orders")
-    public ResponseEntity<?> getAllOrders(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<?> getAllOrders() {
         List<Order> orders = orderRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         List<Map<String, Object>> response = new ArrayList<>();
         for (Order o : orders) {
@@ -108,8 +109,7 @@ public class AdminController {
     @PutMapping("/orders/{id}/status")
     public ResponseEntity<?> updateOrderStatus(
             @PathVariable Long id,
-            @RequestBody Map<String, Object> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+            @RequestBody Map<String, Object> payload) {
 
         Optional<Order> orderOpt = orderRepository.findById(id);
         if (orderOpt.isEmpty()) {
@@ -147,10 +147,7 @@ public class AdminController {
     }
 
     @PostMapping("/orders/create")
-    public ResponseEntity<?> createManualOrder(
-            @RequestBody Map<String, Object> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> createManualOrder(@RequestBody Map<String, Object> payload) {
         User orderUser = null;
         if (payload.containsKey("customerEmail") && payload.get("customerEmail") != null) {
             orderUser = userRepository.findByEmailIgnoreCase(String.valueOf(payload.get("customerEmail")).trim()).orElse(null);
@@ -162,7 +159,7 @@ public class AdminController {
             orderUser = userRepository.findAll().stream().findFirst().orElse(null);
         }
 
-        // Generate guaranteed unique order number without duplicates
+        // Generate unique order number without duplicates
         String orderNumber;
         long seq = orderRepository.count() + 1;
         do {
@@ -193,7 +190,7 @@ public class AdminController {
 
     // --- 2. REAL INVENTORY MANAGEMENT ----------------------------------
     @GetMapping("/inventory")
-    public ResponseEntity<?> getAllInventory(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<?> getAllInventory() {
         List<Product> products = productRepository.findAll();
         return ResponseEntity.ok(products);
     }
@@ -201,8 +198,7 @@ public class AdminController {
     @PutMapping("/inventory/{id}/restock")
     public ResponseEntity<?> restockProduct(
             @PathVariable Long id,
-            @RequestBody Map<String, Object> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+            @RequestBody Map<String, Object> payload) {
 
         Optional<Product> prodOpt = productRepository.findById(id);
         if (prodOpt.isEmpty()) {
@@ -221,9 +217,9 @@ public class AdminController {
         ));
     }
 
-    // --- 3. USER MANAGEMENT & ACCESS CONTROL (MONITOR USERS & MAKE ADMIN) ---
+    // --- 3. USER MANAGEMENT & ACCESS CONTROL ---------------------------
     @GetMapping("/users")
-    public ResponseEntity<?> getAllUsers(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<?> getAllUsers() {
         List<User> users = userRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         List<Map<String, Object>> response = new ArrayList<>();
         for (User u : users) {
@@ -238,7 +234,6 @@ public class AdminController {
             map.put("isActive", u.isActive());
             map.put("createdAt", u.getCreatedAt());
 
-            // Real purchase metrics
             try {
                 List<Order> userOrders = orderRepository.findByUserOrderByCreatedAtDesc(u);
                 map.put("ordersCount", userOrders.size());
@@ -260,10 +255,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/promote")
-    public ResponseEntity<?> promoteUserToAdmin(
-            @RequestBody Map<String, String> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> promoteUserToAdmin(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
             return ResponseEntity.badRequest().body(new MessageResponse("Email is required"));
@@ -292,10 +284,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/demote")
-    public ResponseEntity<?> demoteAdminToCustomer(
-            @RequestBody Map<String, String> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> demoteAdminToCustomer(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
             return ResponseEntity.badRequest().body(new MessageResponse("Email is required"));
@@ -319,10 +308,7 @@ public class AdminController {
     }
 
     @PutMapping("/users/{id}/toggle-status")
-    public ResponseEntity<?> toggleUserActiveStatus(
-            @PathVariable Long id,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> toggleUserActiveStatus(@PathVariable Long id) {
         Optional<User> userOpt = userRepository.findById(id);
         if (userOpt.isEmpty()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MessageResponse("User not found"));
@@ -344,10 +330,7 @@ public class AdminController {
     }
 
     @DeleteMapping("/users/{id}")
-    public ResponseEntity<?> deleteUser(
-            @PathVariable Long id,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> deleteUser(@PathVariable Long id) {
         Optional<User> userOpt = userRepository.findById(id);
         if (userOpt.isEmpty()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new MessageResponse("User not found"));
@@ -363,10 +346,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/create")
-    public ResponseEntity<?> createAdminUser(
-            @RequestBody Map<String, String> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
-
+    public ResponseEntity<?> createAdminUser(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
             return ResponseEntity.badRequest().body(new MessageResponse("Email is required"));
@@ -401,14 +381,8 @@ public class AdminController {
         return ResponseEntity.ok(new MessageResponse("Successfully created user " + user.getEmail() + " with role " + role.name()));
     }
 
-    @Autowired
-    private com.lichtluxe.backend.repository.EmailLogRepository emailLogRepository;
-
     @GetMapping("/email-logs")
-    public ResponseEntity<?> getEmailLogs(@RequestHeader(value = "Authorization", required = false) String authHeader) {
-        if (!verifyAdminAccess(authHeader)) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new MessageResponse("Unauthorized admin access."));
-        }
+    public ResponseEntity<?> getEmailLogs() {
         return ResponseEntity.ok(emailLogRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")));
     }
 }

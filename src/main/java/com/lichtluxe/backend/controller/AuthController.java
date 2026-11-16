@@ -343,9 +343,7 @@ public class AuthController {
             // Check if user exists
             Optional<User> existingUserOpt = userRepository.findByEmail(finalEmail);
             boolean isSharonAdmin = finalEmail.equalsIgnoreCase("sharonshelke1@gmail.com") 
-                    || finalEmail.equalsIgnoreCase("sharon@lichtluxenaturals.org")
-                    || (username != null && username.toLowerCase().contains("sharon"))
-                    || (name != null && name.toLowerCase().contains("sharon"));
+                    || finalEmail.equalsIgnoreCase("sharon@lichtluxenaturals.org");
 
             User user;
             if (existingUserOpt.isPresent()) {

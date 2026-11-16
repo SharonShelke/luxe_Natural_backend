@@ -65,6 +65,9 @@ public class PayPalController {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @org.springframework.beans.factory.annotation.Value("${app.currency:GBP}")
+    private String configuredCurrency;
+
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PayPalController.class);
 
     public static final Map<String, BigDecimal> OFFICIAL_PRICES = Map.of(
@@ -139,10 +142,10 @@ public class PayPalController {
         }
 
         subtotal = subtotal.setScale(2, RoundingMode.HALF_UP);
-        boolean isFreeShipping = subtotal.compareTo(new BigDecimal("50.00")) >= 0;
+        boolean isFreeShipping = subtotal.compareTo(new BigDecimal("70.00")) >= 0;
         BigDecimal shipping = (isFreeShipping || subtotal.compareTo(BigDecimal.ZERO) == 0)
                 ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
-                : new BigDecimal("4.99");
+                : new BigDecimal("6.99");
         BigDecimal total = subtotal.add(shipping).setScale(2, RoundingMode.HALF_UP);
 
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -150,7 +153,7 @@ public class PayPalController {
         resp.put("shipping", shipping);
         resp.put("isFreeShipping", isFreeShipping);
         resp.put("total", total);
-        resp.put("currency", "USD");
+        resp.put("currency", configuredCurrency);
         resp.put("itemCount", totalQuantity);
         resp.put("items", itemBreakdown);
         return ResponseEntity.ok(resp);
@@ -170,7 +173,7 @@ public class PayPalController {
             User user = getOptionalCurrentUser();
             BigDecimal total = BigDecimal.ZERO;
             List<Item> paypalItems = new ArrayList<>();
-            String currency = "USD";
+            String currency = configuredCurrency;
             if (payload != null && payload.containsKey("currency") && payload.get("currency") != null) {
                 String c = String.valueOf(payload.get("currency")).trim();
                 if (!c.isBlank()) {

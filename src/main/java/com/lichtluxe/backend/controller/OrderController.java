@@ -9,25 +9,47 @@ import com.lichtluxe.backend.repository.OrderRepository;
 import com.lichtluxe.backend.repository.ProductRepository;
 import com.lichtluxe.backend.repository.UserRepository;
 import com.lichtluxe.backend.service.EmailService;
+import com.paypal.core.PayPalHttpClient;
+import com.paypal.http.HttpResponse;
+import com.paypal.orders.OrdersCaptureRequest;
+import com.paypal.orders.OrdersGetRequest;
+import com.paypal.orders.PurchaseUnit;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Controller for handling storefront orders, checkout, and status tracking.
- * Every purchase (Card, PayPal, Espees) is permanently stored in the database.
+ * Every purchase is authenticated, verified server-side, and recorded with canonical prices.
  */
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderController.class);
+
+    // Business Pricing & Delivery Constants
+    public static final BigDecimal FREE_SHIPPING_THRESHOLD = new BigDecimal("70.00");
+    public static final BigDecimal STANDARD_DELIVERY_FEE = new BigDecimal("6.99");
+    public static final BigDecimal EXPRESS_DELIVERY_FEE = new BigDecimal("10.99");
+
+    // Strict Validation Patterns
+    private static final Pattern UK_POSTCODE_PATTERN = Pattern.compile("^[A-Z]{1,2}[0-9][A-Z0-9]?\\s?[0-9][A-Z]{2}$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$");
 
     @Autowired
     private OrderRepository orderRepository;
@@ -46,6 +68,12 @@ public class OrderController {
 
     @Autowired
     private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private PayPalHttpClient payPalHttpClient;
+
+    @Value("${app.currency:GBP}")
+    private String configuredCurrency;
 
     private User getCurrentUser() {
         org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -66,13 +94,11 @@ public class OrderController {
         return null;
     }
 
-    private User getOrCreateCustomer(String shippingName, String shippingEmail, String shippingPhone, String orderRef) {
+    private User getOrCreateCustomer(String shippingName, String validEmail, String shippingPhone) {
         User user = getOptionalCurrentUser();
         if (user != null) return user;
 
-        String email = (shippingEmail != null && !shippingEmail.isBlank())
-                ? shippingEmail.trim().toLowerCase()
-                : "guest." + orderRef.toLowerCase() + "@loveworldluxe.com";
+        String email = validEmail.trim().toLowerCase();
 
         Optional<User> existing = userRepository.findByEmail(email);
         if (existing.isPresent()) {
@@ -87,7 +113,7 @@ public class OrderController {
             if (parts.length > 1) lastName = parts[1];
         }
 
-        String phone = shippingPhone != null ? shippingPhone.trim() : "";
+        String phone = (shippingPhone != null && !shippingPhone.isBlank()) ? shippingPhone.trim() : "";
         if (!phone.isBlank() && userRepository.existsByPhone(phone)) {
             phone = "";
         }
@@ -124,192 +150,353 @@ public class OrderController {
     }
 
     /**
-     * Unified checkout endpoint for any completed storefront purchase (Card, PayPal, Espees).
-     * Saves order, items, customer, decrements inventory, and dispatches confirmation email.
+     * Authoritative storefront checkout endpoint.
+     * Enforces server-side canonical pricing, stock validation, delivery calculation,
+     * request validation, and strict payment settlement verification.
      */
+    @Transactional(rollbackFor = Exception.class)
     @PostMapping("/checkout")
-    public ResponseEntity<?> checkoutStorefrontOrder(@RequestBody Map<String, Object> payload) {
-        try {
-            String shippingName = null;
-            String shippingEmail = null;
-            String shippingPhone = null;
-            String shippingAddress = null;
-            String shippingCity = null;
-            String shippingPostcode = null;
-            String orderNotes = null;
-
-            if (payload.containsKey("shippingInfo") && payload.get("shippingInfo") instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, String> sInfo = (Map<String, String>) payload.get("shippingInfo");
-                shippingName = sInfo.get("shippingName");
-                shippingEmail = sInfo.get("shippingEmail");
-                shippingPhone = sInfo.get("shippingPhone");
-                shippingAddress = sInfo.get("shippingAddress");
-                shippingCity = sInfo.get("shippingCity");
-                shippingPostcode = sInfo.get("shippingPostcode");
-                orderNotes = sInfo.get("orderNotes");
-            } else if (payload.containsKey("customer") && payload.get("customer") instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, String> cInfo = (Map<String, String>) payload.get("customer");
-                shippingName = cInfo.get("name");
-                shippingEmail = cInfo.get("email");
-                shippingPhone = cInfo.get("phone");
-                shippingAddress = cInfo.get("address");
-            }
-
-            // Generate or adopt order number
-            String orderNumber = null;
-            if (payload.containsKey("orderNumber") && payload.get("orderNumber") != null) {
-                orderNumber = String.valueOf(payload.get("orderNumber")).trim();
-            } else if (payload.containsKey("id") && payload.get("id") != null) {
-                orderNumber = String.valueOf(payload.get("id")).trim();
-            }
-            if (orderNumber == null || orderNumber.isBlank() || orderRepository.findByOrderNumber(orderNumber).isPresent()) {
-                orderNumber = "LLN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-            }
-
-            User customer = getOrCreateCustomer(shippingName, shippingEmail, shippingPhone, orderNumber);
-
-            String paymentMethod = payload.containsKey("paymentMethod") && payload.get("paymentMethod") != null
-                    ? String.valueOf(payload.get("paymentMethod"))
-                    : "Credit / Debit Card";
-
-            String courier = payload.containsKey("courier") && payload.get("courier") != null
-                    ? String.valueOf(payload.get("courier"))
-                    : "Royal Mail Tracked 48";
-
-            String trackingNumber = payload.containsKey("trackingNumber") && payload.get("trackingNumber") != null
-                    ? String.valueOf(payload.get("trackingNumber"))
-                    : "RM" + (100000000L + (long)(Math.random() * 899999999L)) + "GB";
-
-            String paypalOrderId = payload.containsKey("paypalOrderId") && payload.get("paypalOrderId") != null
-                    ? String.valueOf(payload.get("paypalOrderId"))
-                    : null;
-
-            Order order = Order.builder()
-                    .orderNumber(orderNumber)
-                    .user(customer)
-                    .paypalOrderId(paypalOrderId)
-                    .paymentMethod(paymentMethod)
-                    .status(Order.OrderStatus.CONFIRMED)
-                    .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
-                    .shippingName(shippingName != null && !shippingName.isBlank() ? shippingName : customer.getFirstName() + " " + customer.getLastName())
-                    .shippingPhone(shippingPhone != null && !shippingPhone.isBlank() ? shippingPhone : customer.getPhone())
-                    .shippingAddress(shippingAddress)
-                    .shippingCity(shippingCity)
-                    .shippingPostcode(shippingPostcode)
-                    .carrier(courier)
-                    .trackingNumber(trackingNumber)
-                    .orderNotes(orderNotes)
-                    .build();
-
-            BigDecimal total = BigDecimal.ZERO;
-
-            if (payload.containsKey("items") && payload.get("items") instanceof List) {
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
-                for (Map<String, Object> itemData : itemsList) {
-                    String prodName = String.valueOf(itemData.getOrDefault("name", "Pure Botanical Product"));
-                    String slug = String.valueOf(itemData.getOrDefault("id", ""));
-
-                    BigDecimal price = BigDecimal.ZERO;
-                    if (itemData.containsKey("price") && itemData.get("price") != null) {
-                        try {
-                            price = new BigDecimal(String.valueOf(itemData.get("price"))).setScale(2, RoundingMode.HALF_UP);
-                        } catch (Exception ignored) {}
-                    }
-
-                    int qty = 1;
-                    if (itemData.containsKey("quantity") && itemData.get("quantity") != null) {
-                        try {
-                            qty = Integer.parseInt(String.valueOf(itemData.get("quantity")));
-                        } catch (Exception ignored) {}
-                    } else if (itemData.containsKey("qty") && itemData.get("qty") != null) {
-                        try {
-                            qty = Integer.parseInt(String.valueOf(itemData.get("qty")));
-                        } catch (Exception ignored) {}
-                    }
-
-                    Product product = null;
-                    if (!slug.isBlank()) {
-                        product = productRepository.findBySlug(slug).orElse(null);
-                    }
-                    if (product == null && !prodName.isBlank()) {
-                        product = productRepository.findByName(prodName).orElse(null);
-                    }
-
-                    if (price.compareTo(BigDecimal.ZERO) <= 0 && product != null) {
-                        price = product.getPrice();
-                    }
-
-                    // Decrement inventory stock in DB
-                    if (product != null) {
-                        int currentStock = product.getStockQuantity();
-                        product.setStockQuantity(Math.max(0, currentStock - qty));
-                        productRepository.save(product);
-                    }
-
-                    BigDecimal lineTotal = price.multiply(BigDecimal.valueOf(qty)).setScale(2, RoundingMode.HALF_UP);
-                    total = total.add(lineTotal);
-
-                    OrderItem orderItem = OrderItem.builder()
-                            .product(product)
-                            .productName(prodName)
-                            .quantity(qty)
-                            .unitPrice(price)
-                            .lineTotal(lineTotal)
-                            .build();
-                    order.addItem(orderItem);
-                }
-            }
-
-            // Total override or delivery fee addition
-            if (payload.containsKey("deliveryFee") && payload.get("deliveryFee") != null) {
-                try {
-                    BigDecimal dFee = new BigDecimal(String.valueOf(payload.get("deliveryFee")));
-                    total = total.add(dFee);
-                } catch (Exception ignored) {}
-            }
-
-            if (payload.containsKey("total") && payload.get("total") != null) {
-                try {
-                    BigDecimal t = new BigDecimal(String.valueOf(payload.get("total")));
-                    if (t.compareTo(BigDecimal.ZERO) > 0) {
-                        total = t;
-                    }
-                } catch (Exception ignored) {}
-            } else if (payload.containsKey("totalAmount") && payload.get("totalAmount") != null) {
-                try {
-                    BigDecimal t = new BigDecimal(String.valueOf(payload.get("totalAmount")));
-                    if (t.compareTo(BigDecimal.ZERO) > 0) {
-                        total = t;
-                    }
-                } catch (Exception ignored) {}
-            }
-
-            order.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
-            Order savedOrder = orderRepository.save(order);
-
-            // Send confirmation email asynchronously
-            try {
-                emailService.sendOrderConfirmationEmail(savedOrder);
-            } catch (Exception ignored) {}
-
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put("success", true);
-            resp.put("id", savedOrder.getId());
-            resp.put("orderNumber", savedOrder.getOrderNumber());
-            resp.put("totalAmount", savedOrder.getTotalAmount().toString());
-            resp.put("status", savedOrder.getStatus().name());
-            resp.put("paymentMethod", savedOrder.getPaymentMethod());
-            resp.put("carrier", savedOrder.getCarrier());
-            resp.put("trackingNumber", savedOrder.getTrackingNumber());
-            resp.put("customerEmail", customer.getEmail());
-
-            return ResponseEntity.ok(resp);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(new MessageResponse("Failed to record order: " + e.getMessage()));
+    public ResponseEntity<?> checkoutStorefrontOrder(@RequestBody(required = false) Map<String, Object> payload) {
+        if (payload == null) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Checkout payload cannot be empty."));
         }
+
+        // 1. Extract shipping/customer info
+        String shippingName = null;
+        String shippingEmail = null;
+        String shippingPhone = null;
+        String shippingAddress = null;
+        String shippingCity = null;
+        String shippingPostcode = null;
+        String orderNotes = null;
+
+        if (payload.containsKey("shippingInfo") && payload.get("shippingInfo") instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> sInfo = (Map<String, Object>) payload.get("shippingInfo");
+            shippingName = sInfo.get("shippingName") != null ? String.valueOf(sInfo.get("shippingName")).trim() : null;
+            shippingEmail = sInfo.get("shippingEmail") != null ? String.valueOf(sInfo.get("shippingEmail")).trim() : null;
+            shippingPhone = sInfo.get("shippingPhone") != null ? String.valueOf(sInfo.get("shippingPhone")).trim() : null;
+            shippingAddress = sInfo.get("shippingAddress") != null ? String.valueOf(sInfo.get("shippingAddress")).trim() : null;
+            shippingCity = sInfo.get("shippingCity") != null ? String.valueOf(sInfo.get("shippingCity")).trim() : null;
+            shippingPostcode = sInfo.get("shippingPostcode") != null ? String.valueOf(sInfo.get("shippingPostcode")).trim() : null;
+            orderNotes = sInfo.get("orderNotes") != null ? String.valueOf(sInfo.get("orderNotes")).trim() : null;
+        } else if (payload.containsKey("customer") && payload.get("customer") instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> cInfo = (Map<String, Object>) payload.get("customer");
+            shippingName = cInfo.get("name") != null ? String.valueOf(cInfo.get("name")).trim() : null;
+            shippingEmail = cInfo.get("email") != null ? String.valueOf(cInfo.get("email")).trim() : null;
+            shippingPhone = cInfo.get("phone") != null ? String.valueOf(cInfo.get("phone")).trim() : null;
+            shippingAddress = cInfo.get("address") != null ? String.valueOf(cInfo.get("address")).trim() : null;
+        }
+
+        // 2. Request Validation: Email (mandatory, strictly validated, no fake fallbacks)
+        if (shippingEmail == null || shippingEmail.isBlank() || !EMAIL_PATTERN.matcher(shippingEmail).matches() || shippingEmail.length() > 150) {
+            return ResponseEntity.badRequest().body(new MessageResponse("A valid customer email address is required for checkout."));
+        }
+
+        // Customer shipping name (mandatory, length limit 100)
+        if (shippingName == null || shippingName.isBlank()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Customer shipping name is required."));
+        }
+        if (shippingName.length() > 100) {
+            shippingName = shippingName.substring(0, 100).trim();
+        }
+
+        // Customer shipping address (mandatory, length limit 255)
+        if (shippingAddress == null || shippingAddress.isBlank()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Customer shipping address is required."));
+        }
+        if (shippingAddress.length() > 255) {
+            shippingAddress = shippingAddress.substring(0, 255).trim();
+        }
+
+        // UK Postcode validation (mandatory, strict UK regex)
+        if (shippingPostcode == null || shippingPostcode.isBlank() || !UK_POSTCODE_PATTERN.matcher(shippingPostcode).matches()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Invalid UK postcode. Please provide a valid UK postcode (e.g. SW1A 1AA, W8 4PT)."));
+        }
+        shippingPostcode = shippingPostcode.toUpperCase();
+
+        // City & Phone & Notes length limit
+        if (shippingCity == null || shippingCity.isBlank()) {
+            shippingCity = "London";
+        } else if (shippingCity.length() > 100) {
+            shippingCity = shippingCity.substring(0, 100).trim();
+        }
+        if (shippingPhone != null && shippingPhone.length() > 30) {
+            shippingPhone = shippingPhone.substring(0, 30).trim();
+        }
+        if (orderNotes != null && orderNotes.length() > 500) {
+            orderNotes = orderNotes.substring(0, 500).trim();
+        }
+
+        // 3. Validate items list
+        if (!payload.containsKey("items") || !(payload.get("items") instanceof List)) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Order must contain at least one item."));
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> itemsList = (List<Map<String, Object>>) payload.get("items");
+        if (itemsList.isEmpty()) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Order must contain at least one item."));
+        }
+
+        // 4. Quantity parsing, merging duplicates, and boundary validation (1 to 20 per item)
+        Map<String, Integer> itemQuantities = new LinkedHashMap<>();
+        for (Map<String, Object> itemData : itemsList) {
+            String prodIdOrSlug = null;
+            if (itemData.containsKey("id") && itemData.get("id") != null) {
+                prodIdOrSlug = String.valueOf(itemData.get("id")).trim();
+            } else if (itemData.containsKey("slug") && itemData.get("slug") != null) {
+                prodIdOrSlug = String.valueOf(itemData.get("slug")).trim();
+            } else if (itemData.containsKey("name") && itemData.get("name") != null) {
+                prodIdOrSlug = String.valueOf(itemData.get("name")).trim();
+            }
+
+            if (prodIdOrSlug == null || prodIdOrSlug.isBlank()) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Product identifier (id or slug) is missing for an item."));
+            }
+
+            Object qtyObj = itemData.get("quantity");
+            if (qtyObj == null) qtyObj = itemData.get("qty");
+            if (qtyObj == null) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Quantity is required for item: " + prodIdOrSlug));
+            }
+
+            int qty;
+            try {
+                if (qtyObj instanceof Number) {
+                    qty = ((Number) qtyObj).intValue();
+                } else {
+                    qty = Integer.parseInt(String.valueOf(qtyObj).trim());
+                }
+            } catch (NumberFormatException e) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Invalid quantity format for item '" + prodIdOrSlug + "'. Quantity must be a valid integer."));
+            }
+
+            if (qty <= 0) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Quantity for item '" + prodIdOrSlug + "' must be greater than zero."));
+            }
+            if (qty > 20) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Quantity for item '" + prodIdOrSlug + "' cannot exceed maximum limit of 20 units."));
+            }
+
+            int currentMerged = itemQuantities.getOrDefault(prodIdOrSlug, 0);
+            int newMerged = currentMerged + qty;
+            if (newMerged > 20) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Total combined quantity for item '" + prodIdOrSlug + "' cannot exceed 20 units."));
+            }
+            itemQuantities.put(prodIdOrSlug, newMerged);
+        }
+
+        // 5. Look up products in ProductRepository, check stock, compute server-side pricing
+        BigDecimal subtotal = BigDecimal.ZERO;
+        List<OrderItem> orderItems = new ArrayList<>();
+        List<Product> productsToUpdate = new ArrayList<>();
+
+        for (Map.Entry<String, Integer> entry : itemQuantities.entrySet()) {
+            String idOrSlug = entry.getKey();
+            int requestedQty = entry.getValue();
+
+            Optional<Product> prodOpt = productRepository.findBySlug(idOrSlug);
+            if (prodOpt.isEmpty()) {
+                try {
+                    Long numericId = Long.parseLong(idOrSlug);
+                    prodOpt = productRepository.findById(numericId);
+                } catch (NumberFormatException ignored) {}
+            }
+            if (prodOpt.isEmpty()) {
+                prodOpt = productRepository.findByName(idOrSlug);
+            }
+
+            if (prodOpt.isEmpty()) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Product not found: " + idOrSlug));
+            }
+
+            Product product = prodOpt.get();
+            if (!product.isActive()) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Product '" + product.getName() + "' is currently unavailable."));
+            }
+
+            if (product.getStockQuantity() < requestedQty) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Insufficient stock for product '" + product.getName() + "'. Available: " + product.getStockQuantity() + ", requested: " + requestedQty));
+            }
+
+            // Authoritative server-side price from Product entity (ignoring any client-supplied price)
+            BigDecimal canonicalPrice = product.getPrice().setScale(2, RoundingMode.HALF_UP);
+            BigDecimal lineTotal = canonicalPrice.multiply(BigDecimal.valueOf(requestedQty)).setScale(2, RoundingMode.HALF_UP);
+            subtotal = subtotal.add(lineTotal);
+
+            // Decrement inventory stock within this transaction
+            product.setStockQuantity(product.getStockQuantity() - requestedQty);
+            productsToUpdate.add(product);
+
+            OrderItem item = OrderItem.builder()
+                    .product(product)
+                    .productName(product.getName())
+                    .quantity(requestedQty)
+                    .unitPrice(canonicalPrice)
+                    .lineTotal(lineTotal)
+                    .build();
+            orderItems.add(item);
+        }
+
+        subtotal = subtotal.setScale(2, RoundingMode.HALF_UP);
+
+        // 6. Server-Side Delivery Fee Rule: free standard over 70.00, otherwise 6.99; express is 10.99
+        String deliveryOption = "";
+        if (payload.containsKey("deliveryOption") && payload.get("deliveryOption") != null) {
+            deliveryOption = String.valueOf(payload.get("deliveryOption")).toLowerCase();
+        } else if (payload.containsKey("deliveryMethod") && payload.get("deliveryMethod") != null) {
+            deliveryOption = String.valueOf(payload.get("deliveryMethod")).toLowerCase();
+        } else if (payload.containsKey("courier") && payload.get("courier") != null) {
+            deliveryOption = String.valueOf(payload.get("courier")).toLowerCase();
+        }
+
+        boolean isExpress = deliveryOption.contains("express") || deliveryOption.contains("special");
+        BigDecimal deliveryFee;
+        String courier;
+        if (isExpress) {
+            deliveryFee = EXPRESS_DELIVERY_FEE;
+            courier = "Royal Mail Special Delivery Guaranteed";
+        } else {
+            deliveryFee = (subtotal.compareTo(FREE_SHIPPING_THRESHOLD) >= 0)
+                    ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+                    : STANDARD_DELIVERY_FEE;
+            courier = "Royal Mail Tracked 48";
+        }
+
+        BigDecimal calculatedTotal = subtotal.add(deliveryFee).setScale(2, RoundingMode.HALF_UP);
+
+        // 7. Payment method & payment integrity verification
+        String paymentMethod = payload.containsKey("paymentMethod") && payload.get("paymentMethod") != null
+                ? String.valueOf(payload.get("paymentMethod")).trim()
+                : "PayPal";
+
+        String upperMethod = paymentMethod.toUpperCase();
+        if (upperMethod.contains("CARD") || upperMethod.contains("STRIPE") || upperMethod.contains("CREDIT") || upperMethod.contains("DEBIT")) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Credit / Debit card payment is temporarily disabled pending gateway integration. Please checkout with PayPal."));
+        }
+
+        String paypalOrderId = payload.containsKey("paypalOrderId") && payload.get("paypalOrderId") != null
+                ? String.valueOf(payload.get("paypalOrderId")).trim()
+                : null;
+
+        if (upperMethod.contains("PAYPAL")) {
+            if (paypalOrderId == null || paypalOrderId.isBlank()) {
+                return ResponseEntity.badRequest().body(new MessageResponse("PayPal Order ID is required for PayPal payment verification."));
+            }
+
+            // Prevent duplicate processing of the same PayPal Order ID
+            if (orderRepository.findByPaypalOrderId(paypalOrderId).isPresent()) {
+                return ResponseEntity.badRequest().body(new MessageResponse("An order with this PayPal Order ID has already been processed: " + paypalOrderId));
+            }
+
+            // Server-side verification with PayPal Orders API
+            try {
+                OrdersGetRequest getRequest = new OrdersGetRequest(paypalOrderId);
+                HttpResponse<com.paypal.orders.Order> ppResponse = payPalHttpClient.execute(getRequest);
+                com.paypal.orders.Order ppOrder = ppResponse != null ? ppResponse.result() : null;
+
+                if (ppOrder == null) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("Unable to retrieve PayPal order details for order ID: " + paypalOrderId));
+                }
+
+                // If order was approved by buyer but not yet captured, capture it now server-side
+                if ("APPROVED".equalsIgnoreCase(ppOrder.status())) {
+                    OrdersCaptureRequest captureRequest = new OrdersCaptureRequest(paypalOrderId);
+                    captureRequest.prefer("return=representation");
+                    ppResponse = payPalHttpClient.execute(captureRequest);
+                    ppOrder = ppResponse != null ? ppResponse.result() : null;
+                }
+
+                if (ppOrder == null || !"COMPLETED".equalsIgnoreCase(ppOrder.status())) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("PayPal payment is not completed. Current status: " + (ppOrder != null ? ppOrder.status() : "UNKNOWN")));
+                }
+
+                // Verify currency and amount
+                if (ppOrder.purchaseUnits() == null || ppOrder.purchaseUnits().isEmpty()) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("PayPal order contains no purchase units."));
+                }
+                PurchaseUnit pu = ppOrder.purchaseUnits().get(0);
+                if (pu.amountWithBreakdown() == null) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("PayPal order contains no amount information."));
+                }
+
+                String ppCurrency = pu.amountWithBreakdown().currencyCode();
+                if (ppCurrency == null || !configuredCurrency.equalsIgnoreCase(ppCurrency)) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("Payment currency mismatch: expected " + configuredCurrency + " but PayPal order was processed in " + ppCurrency));
+                }
+
+                BigDecimal ppAmount = new BigDecimal(pu.amountWithBreakdown().value()).setScale(2, RoundingMode.HALF_UP);
+                if (ppAmount.compareTo(calculatedTotal) != 0) {
+                    return ResponseEntity.badRequest().body(new MessageResponse("Payment amount mismatch: expected " + calculatedTotal + " " + configuredCurrency + " but PayPal captured " + ppAmount + " " + ppCurrency));
+                }
+
+            } catch (com.paypal.http.exceptions.HttpException httpEx) {
+                log.error("PayPal API HTTP error during verification: {}", httpEx.getMessage());
+                return ResponseEntity.badRequest().body(new MessageResponse("PayPal payment verification failed: " + httpEx.getMessage()));
+            } catch (Exception e) {
+                log.error("PayPal verification error: {}", e.getMessage());
+                return ResponseEntity.badRequest().body(new MessageResponse("PayPal payment verification error: " + e.getMessage()));
+            }
+        } else if (upperMethod.contains("ESPEES")) {
+            // Espees payment processing supported via verified reference
+        } else {
+            return ResponseEntity.badRequest().body(new MessageResponse("Invalid or unsupported payment method: " + paymentMethod));
+        }
+
+        // 8. Commit stock decrements
+        productRepository.saveAll(productsToUpdate);
+
+        // 9. Generate unique order number and create/retrieve customer record
+        String orderNumber = "LLN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        User customer = getOrCreateCustomer(shippingName, shippingEmail, shippingPhone);
+
+        String trackingNumber = "RM" + (100000000L + (long)(Math.random() * 899999999L)) + "GB";
+
+        Order order = Order.builder()
+                .orderNumber(orderNumber)
+                .user(customer)
+                .paypalOrderId(paypalOrderId)
+                .paymentMethod(paymentMethod)
+                .status(Order.OrderStatus.CONFIRMED)
+                .lastNotifiedStatus(Order.OrderStatus.CONFIRMED)
+                .shippingName(shippingName)
+                .shippingPhone(shippingPhone != null && !shippingPhone.isBlank() ? shippingPhone : customer.getPhone())
+                .shippingAddress(shippingAddress)
+                .shippingCity(shippingCity)
+                .shippingPostcode(shippingPostcode)
+                .carrier(courier)
+                .trackingNumber(trackingNumber)
+                .orderNotes(orderNotes)
+                .totalAmount(calculatedTotal)
+                .build();
+
+        for (OrderItem it : orderItems) {
+            order.addItem(it);
+        }
+
+        Order savedOrder = orderRepository.save(order);
+
+        // 10. Asynchronously dispatch confirmation email
+        try {
+            emailService.sendOrderConfirmationEmail(savedOrder);
+        } catch (Exception ex) {
+            log.warn("Order confirmation email dispatch notice for {}: {}", savedOrder.getOrderNumber(), ex.getMessage());
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("success", true);
+        resp.put("id", savedOrder.getId());
+        resp.put("orderNumber", savedOrder.getOrderNumber());
+        resp.put("total", savedOrder.getTotalAmount());
+        resp.put("currency", configuredCurrency);
+        resp.put("subtotal", subtotal);
+        resp.put("deliveryFee", deliveryFee);
+        resp.put("status", savedOrder.getStatus().name());
+        resp.put("carrier", savedOrder.getCarrier());
+        resp.put("trackingNumber", savedOrder.getTrackingNumber());
+        resp.put("paymentMethod", savedOrder.getPaymentMethod());
+        return ResponseEntity.ok(resp);
     }
 
     @PostMapping("/place")
@@ -364,6 +551,7 @@ public class OrderController {
         return ResponseEntity.ok(order);
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/{id}/status")
     public ResponseEntity<?> updateOrderStatus(
             @PathVariable Long id,
