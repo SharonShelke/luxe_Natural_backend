@@ -8,15 +8,12 @@ import com.lichtluxe.backend.entity.User;
 import com.lichtluxe.backend.repository.OrderRepository;
 import com.lichtluxe.backend.repository.ProductRepository;
 import com.lichtluxe.backend.repository.UserRepository;
-import com.lichtluxe.backend.security.JwtUtils;
 import com.lichtluxe.backend.service.EmailService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
@@ -45,21 +42,11 @@ public class AdminController {
     private PasswordEncoder passwordEncoder;
 
     @Autowired
-    private JwtUtils jwtUtils;
-
-    @Autowired
     private com.lichtluxe.backend.repository.EmailLogRepository emailLogRepository;
-
-    private boolean verifyAdminAccess() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
-            return false;
-        }
-        return auth.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
-    }
 
     // --- 1. REAL ORDERS MANAGEMENT -------------------------------------
     @GetMapping("/orders")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> getAllOrders() {
         List<Order> orders = orderRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         List<Map<String, Object>> response = new ArrayList<>();
@@ -107,6 +94,7 @@ public class AdminController {
     }
 
     @PutMapping("/orders/{id}/status")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> updateOrderStatus(
             @PathVariable Long id,
             @RequestBody Map<String, Object> payload) {
@@ -134,8 +122,13 @@ public class AdminController {
                 }
 
                 // Dispatch automated email notification
-                emailService.sendOrderStatusEmail(order, newStatus);
-                order.setLastNotifiedStatus(newStatus);
+                try {
+                    emailService.sendOrderStatusEmail(order, newStatus);
+                    order.setLastNotifiedStatus(newStatus);
+                } catch (Exception e) {
+                    org.slf4j.LoggerFactory.getLogger(AdminController.class)
+                            .error("Failed to send status update email for order {}: {}", order.getOrderNumber(), e.getMessage());
+                }
 
             } catch (IllegalArgumentException e) {
                 return ResponseEntity.badRequest().body(new MessageResponse("Invalid order status: " + statusStr));
@@ -147,6 +140,7 @@ public class AdminController {
     }
 
     @PostMapping("/orders/create")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> createManualOrder(@RequestBody Map<String, Object> payload) {
         User orderUser = null;
         if (payload.containsKey("customerEmail") && payload.get("customerEmail") != null) {
@@ -190,12 +184,14 @@ public class AdminController {
 
     // --- 2. REAL INVENTORY MANAGEMENT ----------------------------------
     @GetMapping("/inventory")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> getAllInventory() {
         List<Product> products = productRepository.findAll();
         return ResponseEntity.ok(products);
     }
 
     @PutMapping("/inventory/{id}/restock")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> restockProduct(
             @PathVariable Long id,
             @RequestBody Map<String, Object> payload) {
@@ -219,6 +215,7 @@ public class AdminController {
 
     // --- 3. USER MANAGEMENT & ACCESS CONTROL ---------------------------
     @GetMapping("/users")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> getAllUsers() {
         List<User> users = userRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         List<Map<String, Object>> response = new ArrayList<>();
@@ -255,6 +252,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/promote")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> promoteUserToAdmin(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
@@ -284,6 +282,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/demote")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> demoteAdminToCustomer(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
@@ -308,6 +307,7 @@ public class AdminController {
     }
 
     @PutMapping("/users/{id}/toggle-status")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> toggleUserActiveStatus(@PathVariable Long id) {
         Optional<User> userOpt = userRepository.findById(id);
         if (userOpt.isEmpty()) {
@@ -330,6 +330,7 @@ public class AdminController {
     }
 
     @DeleteMapping("/users/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> deleteUser(@PathVariable Long id) {
         Optional<User> userOpt = userRepository.findById(id);
         if (userOpt.isEmpty()) {
@@ -346,6 +347,7 @@ public class AdminController {
     }
 
     @PostMapping("/users/create")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> createAdminUser(@RequestBody Map<String, String> payload) {
         String email = payload.get("email");
         if (email == null || email.isBlank()) {
@@ -382,6 +384,7 @@ public class AdminController {
     }
 
     @GetMapping("/email-logs")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> getEmailLogs() {
         return ResponseEntity.ok(emailLogRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")));
     }

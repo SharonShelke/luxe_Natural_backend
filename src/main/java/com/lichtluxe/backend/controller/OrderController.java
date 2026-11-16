@@ -72,6 +72,9 @@ public class OrderController {
     @Autowired
     private PayPalHttpClient payPalHttpClient;
 
+    @Autowired
+    private com.lichtluxe.backend.service.PricingService pricingService;
+
     @Value("${app.currency:GBP}")
     private String configuredCurrency;
 
@@ -113,9 +116,9 @@ public class OrderController {
             if (parts.length > 1) lastName = parts[1];
         }
 
-        String phone = (shippingPhone != null && !shippingPhone.isBlank()) ? shippingPhone.trim() : "";
-        if (!phone.isBlank() && userRepository.existsByPhone(phone)) {
-            phone = "";
+        String phone = (shippingPhone != null && !shippingPhone.isBlank()) ? shippingPhone.trim() : null;
+        if (phone != null && userRepository.existsByPhone(phone)) {
+            phone = null;
         }
 
         User newUser = User.builder()
@@ -239,109 +242,31 @@ public class OrderController {
             return ResponseEntity.badRequest().body(new MessageResponse("Order must contain at least one item."));
         }
 
-        // 4. Quantity parsing, merging duplicates, and boundary validation (1 to 20 per item)
-        Map<String, Integer> itemQuantities = new LinkedHashMap<>();
-        for (Map<String, Object> itemData : itemsList) {
-            String prodIdOrSlug = null;
-            if (itemData.containsKey("id") && itemData.get("id") != null) {
-                prodIdOrSlug = String.valueOf(itemData.get("id")).trim();
-            } else if (itemData.containsKey("slug") && itemData.get("slug") != null) {
-                prodIdOrSlug = String.valueOf(itemData.get("slug")).trim();
-            } else if (itemData.containsKey("name") && itemData.get("name") != null) {
-                prodIdOrSlug = String.valueOf(itemData.get("name")).trim();
-            }
+        // 4. Idempotency Check: if paypalOrderId already processed, return existing order immediately (HTTP 200)
+        String paypalOrderId = payload.containsKey("paypalOrderId") && payload.get("paypalOrderId") != null
+                ? String.valueOf(payload.get("paypalOrderId")).trim()
+                : null;
 
-            if (prodIdOrSlug == null || prodIdOrSlug.isBlank()) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Product identifier (id or slug) is missing for an item."));
+        if (paypalOrderId != null && !paypalOrderId.isBlank()) {
+            Optional<Order> existingOrderOpt = orderRepository.findByPaypalOrderId(paypalOrderId);
+            if (existingOrderOpt.isPresent()) {
+                Order existing = existingOrderOpt.get();
+                Map<String, Object> dupResp = new LinkedHashMap<>();
+                dupResp.put("success", true);
+                dupResp.put("id", existing.getId());
+                dupResp.put("orderNumber", existing.getOrderNumber());
+                dupResp.put("total", existing.getTotalAmount());
+                dupResp.put("currency", configuredCurrency);
+                dupResp.put("status", existing.getStatus().name());
+                dupResp.put("carrier", existing.getCarrier());
+                dupResp.put("trackingNumber", existing.getTrackingNumber());
+                dupResp.put("paymentMethod", existing.getPaymentMethod());
+                dupResp.put("message", "Order already processed.");
+                return ResponseEntity.ok(dupResp);
             }
-
-            Object qtyObj = itemData.get("quantity");
-            if (qtyObj == null) qtyObj = itemData.get("qty");
-            if (qtyObj == null) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Quantity is required for item: " + prodIdOrSlug));
-            }
-
-            int qty;
-            try {
-                if (qtyObj instanceof Number) {
-                    qty = ((Number) qtyObj).intValue();
-                } else {
-                    qty = Integer.parseInt(String.valueOf(qtyObj).trim());
-                }
-            } catch (NumberFormatException e) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Invalid quantity format for item '" + prodIdOrSlug + "'. Quantity must be a valid integer."));
-            }
-
-            if (qty <= 0) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Quantity for item '" + prodIdOrSlug + "' must be greater than zero."));
-            }
-            if (qty > 20) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Quantity for item '" + prodIdOrSlug + "' cannot exceed maximum limit of 20 units."));
-            }
-
-            int currentMerged = itemQuantities.getOrDefault(prodIdOrSlug, 0);
-            int newMerged = currentMerged + qty;
-            if (newMerged > 20) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Total combined quantity for item '" + prodIdOrSlug + "' cannot exceed 20 units."));
-            }
-            itemQuantities.put(prodIdOrSlug, newMerged);
         }
 
-        // 5. Look up products in ProductRepository, check stock, compute server-side pricing
-        BigDecimal subtotal = BigDecimal.ZERO;
-        List<OrderItem> orderItems = new ArrayList<>();
-        List<Product> productsToUpdate = new ArrayList<>();
-
-        for (Map.Entry<String, Integer> entry : itemQuantities.entrySet()) {
-            String idOrSlug = entry.getKey();
-            int requestedQty = entry.getValue();
-
-            Optional<Product> prodOpt = productRepository.findBySlug(idOrSlug);
-            if (prodOpt.isEmpty()) {
-                try {
-                    Long numericId = Long.parseLong(idOrSlug);
-                    prodOpt = productRepository.findById(numericId);
-                } catch (NumberFormatException ignored) {}
-            }
-            if (prodOpt.isEmpty()) {
-                prodOpt = productRepository.findByName(idOrSlug);
-            }
-
-            if (prodOpt.isEmpty()) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Product not found: " + idOrSlug));
-            }
-
-            Product product = prodOpt.get();
-            if (!product.isActive()) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Product '" + product.getName() + "' is currently unavailable."));
-            }
-
-            if (product.getStockQuantity() < requestedQty) {
-                return ResponseEntity.badRequest().body(new MessageResponse("Insufficient stock for product '" + product.getName() + "'. Available: " + product.getStockQuantity() + ", requested: " + requestedQty));
-            }
-
-            // Authoritative server-side price from Product entity (ignoring any client-supplied price)
-            BigDecimal canonicalPrice = product.getPrice().setScale(2, RoundingMode.HALF_UP);
-            BigDecimal lineTotal = canonicalPrice.multiply(BigDecimal.valueOf(requestedQty)).setScale(2, RoundingMode.HALF_UP);
-            subtotal = subtotal.add(lineTotal);
-
-            // Decrement inventory stock within this transaction
-            product.setStockQuantity(product.getStockQuantity() - requestedQty);
-            productsToUpdate.add(product);
-
-            OrderItem item = OrderItem.builder()
-                    .product(product)
-                    .productName(product.getName())
-                    .quantity(requestedQty)
-                    .unitPrice(canonicalPrice)
-                    .lineTotal(lineTotal)
-                    .build();
-            orderItems.add(item);
-        }
-
-        subtotal = subtotal.setScale(2, RoundingMode.HALF_UP);
-
-        // 6. Server-Side Delivery Fee Rule: free standard over 70.00, otherwise 6.99; express is 10.99
+        // 5. Authoritative Server-Side Pricing & Quantity Validation via Shared PricingService
         String deliveryOption = "";
         if (payload.containsKey("deliveryOption") && payload.get("deliveryOption") != null) {
             deliveryOption = String.valueOf(payload.get("deliveryOption")).toLowerCase();
@@ -351,20 +276,42 @@ public class OrderController {
             deliveryOption = String.valueOf(payload.get("courier")).toLowerCase();
         }
 
-        boolean isExpress = deliveryOption.contains("express") || deliveryOption.contains("special");
-        BigDecimal deliveryFee;
-        String courier;
-        if (isExpress) {
-            deliveryFee = EXPRESS_DELIVERY_FEE;
-            courier = "Royal Mail Special Delivery Guaranteed";
-        } else {
-            deliveryFee = (subtotal.compareTo(FREE_SHIPPING_THRESHOLD) >= 0)
-                    ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
-                    : STANDARD_DELIVERY_FEE;
-            courier = "Royal Mail Tracked 48";
+        com.lichtluxe.backend.service.PricingService.PricingResult pricingResult;
+        try {
+            pricingResult = pricingService.calculatePricing(itemsList, deliveryOption);
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(new MessageResponse(ex.getMessage()));
         }
 
-        BigDecimal calculatedTotal = subtotal.add(deliveryFee).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal subtotal = pricingResult.getSubtotal();
+        BigDecimal deliveryFee = pricingResult.getDeliveryFee();
+        BigDecimal calculatedTotal = pricingResult.getTotal();
+        String courier = pricingResult.getCourier();
+
+        // 6. Check stock availability and decrement inside transactional boundary
+        List<OrderItem> orderItems = new ArrayList<>();
+        List<Product> productsToUpdate = new ArrayList<>();
+
+        for (com.lichtluxe.backend.service.PricingService.PricedItem pricedItem : pricingResult.getItems()) {
+            Product product = pricedItem.getProduct();
+            int requestedQty = pricedItem.getQuantity();
+
+            if (product.getStockQuantity() < requestedQty) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Insufficient stock for product '" + product.getName() + "'. Available: " + product.getStockQuantity() + ", requested: " + requestedQty));
+            }
+
+            product.setStockQuantity(product.getStockQuantity() - requestedQty);
+            productsToUpdate.add(product);
+
+            OrderItem item = OrderItem.builder()
+                    .product(product)
+                    .productName(product.getName())
+                    .quantity(requestedQty)
+                    .unitPrice(pricedItem.getUnitPrice())
+                    .lineTotal(pricedItem.getLineTotal())
+                    .build();
+            orderItems.add(item);
+        }
 
         // 7. Payment method & payment integrity verification
         String paymentMethod = payload.containsKey("paymentMethod") && payload.get("paymentMethod") != null
@@ -376,18 +323,9 @@ public class OrderController {
             return ResponseEntity.badRequest().body(new MessageResponse("Credit / Debit card payment is temporarily disabled pending gateway integration. Please checkout with PayPal."));
         }
 
-        String paypalOrderId = payload.containsKey("paypalOrderId") && payload.get("paypalOrderId") != null
-                ? String.valueOf(payload.get("paypalOrderId")).trim()
-                : null;
-
         if (upperMethod.contains("PAYPAL")) {
             if (paypalOrderId == null || paypalOrderId.isBlank()) {
                 return ResponseEntity.badRequest().body(new MessageResponse("PayPal Order ID is required for PayPal payment verification."));
-            }
-
-            // Prevent duplicate processing of the same PayPal Order ID
-            if (orderRepository.findByPaypalOrderId(paypalOrderId).isPresent()) {
-                return ResponseEntity.badRequest().body(new MessageResponse("An order with this PayPal Order ID has already been processed: " + paypalOrderId));
             }
 
             // Server-side verification with PayPal Orders API
@@ -475,13 +413,36 @@ public class OrderController {
             order.addItem(it);
         }
 
-        Order savedOrder = orderRepository.save(order);
+        Order savedOrder;
+        try {
+            savedOrder = orderRepository.save(order);
+        } catch (org.springframework.dao.DataIntegrityViolationException dive) {
+            if (paypalOrderId != null) {
+                Optional<Order> existingOpt = orderRepository.findByPaypalOrderId(paypalOrderId);
+                if (existingOpt.isPresent()) {
+                    Order existing = existingOpt.get();
+                    Map<String, Object> dupResp = new LinkedHashMap<>();
+                    dupResp.put("success", true);
+                    dupResp.put("id", existing.getId());
+                    dupResp.put("orderNumber", existing.getOrderNumber());
+                    dupResp.put("total", existing.getTotalAmount());
+                    dupResp.put("currency", configuredCurrency);
+                    dupResp.put("status", existing.getStatus().name());
+                    dupResp.put("carrier", existing.getCarrier());
+                    dupResp.put("trackingNumber", existing.getTrackingNumber());
+                    dupResp.put("paymentMethod", existing.getPaymentMethod());
+                    dupResp.put("message", "Order already processed.");
+                    return ResponseEntity.ok(dupResp);
+                }
+            }
+            throw dive;
+        }
 
-        // 10. Asynchronously dispatch confirmation email
+        // 10. Asynchronously dispatch confirmation email (failures logged, never fails the order)
         try {
             emailService.sendOrderConfirmationEmail(savedOrder);
         } catch (Exception ex) {
-            log.warn("Order confirmation email dispatch notice for {}: {}", savedOrder.getOrderNumber(), ex.getMessage());
+            log.error("Failed to send order confirmation email for order {}: {}", savedOrder.getOrderNumber(), ex.getMessage());
         }
 
         Map<String, Object> resp = new LinkedHashMap<>();

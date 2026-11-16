@@ -62,7 +62,7 @@ public class Order {
     @Column(name = "order_notes", columnDefinition = "TEXT")
     private String orderNotes;
 
-    @Column(name = "paypal_order_id")
+    @Column(name = "paypal_order_id", unique = true)
     private String paypalOrderId;
 
     @Column(name = "payment_method")

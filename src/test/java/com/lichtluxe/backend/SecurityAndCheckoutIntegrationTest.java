@@ -379,6 +379,97 @@ public class SecurityAndCheckoutIntegrationTest {
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("temporarily disabled")));
     }
 
+    @Test
+    @DisplayName("Submitting duplicate paypalOrderId returns existing order (HTTP 200) without duplicate stock decrement")
+    public void testSubmittingDuplicatePaypalOrderIdReturnsExistingOrder() throws Exception {
+        String mockPaypalOrderId = "PP-IDEMPOTENT-001";
+
+        com.paypal.orders.Order mockPpOrder = new com.paypal.orders.Order();
+        mockPpOrder.status("COMPLETED");
+        mockPpOrder.id(mockPaypalOrderId);
+
+        PurchaseUnit pu = new PurchaseUnit();
+        AmountWithBreakdown amt = new AmountWithBreakdown();
+        amt.currencyCode("GBP");
+        amt.value("21.98");
+        pu.amountWithBreakdown(amt);
+        mockPpOrder.purchaseUnits(List.of(pu));
+
+        @SuppressWarnings("unchecked")
+        HttpResponse<com.paypal.orders.Order> mockResponse = (HttpResponse<com.paypal.orders.Order>) mock(HttpResponse.class);
+        when(mockResponse.result()).thenReturn(mockPpOrder);
+        when(mockResponse.statusCode()).thenReturn(200);
+        when(payPalHttpClient.execute(any(OrdersGetRequest.class))).thenReturn(mockResponse);
+
+        Product product = productRepository.findBySlug("pure-shea-butter").orElseThrow();
+        int initialStock = product.getStockQuantity();
+
+        Map<String, Object> payload = createCheckoutPayloadWithQuantity(1);
+        payload.put("paypalOrderId", mockPaypalOrderId);
+
+        // 1. First submission: creates order
+        mockMvc.perform(post("/api/orders/checkout")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        assertEquals(1, orderRepository.findAll().size(), "Exactly 1 order should be in database");
+        Product productAfterFirst = productRepository.findBySlug("pure-shea-butter").orElseThrow();
+        assertEquals(initialStock - 1, productAfterFirst.getStockQuantity(), "Stock decremented by 1");
+
+        // 2. Duplicate submission: must return existing order (HTTP 200) without duplicate stock decrement
+        mockMvc.perform(post("/api/orders/checkout")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.message").value("Order already processed."));
+
+        assertEquals(1, orderRepository.findAll().size(), "Still exactly 1 order in database");
+        Product productAfterSecond = productRepository.findBySlug("pure-shea-butter").orElseThrow();
+        assertEquals(initialStock - 1, productAfterSecond.getStockQuantity(), "Stock was NOT decremented again");
+    }
+
+    @Test
+    @DisplayName("Shared calculation endpoint returns canonical subtotal, shipping and total")
+    public void testPricingEndpointReturnsCanonicalFigures() throws Exception {
+        Map<String, Object> payload = Map.of(
+                "items", List.of(
+                        Map.of("id", "pure-shea-butter", "quantity", 2)
+                )
+        );
+
+        // 2 * 14.99 = 29.98; shipping = 6.99; total = 36.97
+        mockMvc.perform(post("/api/paypal/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subtotal").value(29.98))
+                .andExpect(jsonPath("$.shipping").value(6.99))
+                .andExpect(jsonPath("$.total").value(36.97))
+                .andExpect(jsonPath("$.currency").value("GBP"));
+    }
+
+    @Test
+    @DisplayName("PayPal Webhook accepts PAYMENT.CAPTURE.COMPLETED and returns 200 OK")
+    public void testPayPalWebhookReceivesEvent() throws Exception {
+        Map<String, Object> webhookPayload = Map.of(
+                "event_type", "PAYMENT.CAPTURE.COMPLETED",
+                "resource", Map.of(
+                        "id", "CAPTURE-12345",
+                        "supplementary_data", Map.of(
+                                "related_ids", Map.of("order_id", "PP-MOCK-WEBHOOK")
+                        )
+                )
+        );
+
+        mockMvc.perform(post("/api/paypal/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(webhookPayload)))
+                .andExpect(status().isOk());
+    }
+
     private Map<String, Object> createCheckoutPayloadWithQuantity(Object quantity) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("shippingInfo", Map.of(
