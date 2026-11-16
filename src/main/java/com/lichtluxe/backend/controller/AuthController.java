@@ -61,7 +61,7 @@ public class AuthController {
     @Value("${app.kingschat.redirect-url:https://lichtluxenaturals.org/}")
     private String kingsChatRedirectUrl;
 
-    @Value("${app.kingschat.connect-url:https://connect.kingschat.online}")
+    @Value("${app.kingschat.connect-url:https://connect.kingsch.at}")
     private String kingsChatConnectUrl;
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AuthController.class);
