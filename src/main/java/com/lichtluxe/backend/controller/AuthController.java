@@ -52,7 +52,7 @@ public class AuthController {
     @Value("${app.kingschat.project-id:c4492f85-ffcf-46ad-97d4-4aa7fa0de03b}")
     private String kingsChatProjectId;
 
-    @Value("${app.kingschat.client-id:c4492f85-ffcf-46ad-97d4-4aa7fa0de03b}")
+    @Value("${app.kingschat.client-id:7de6b647-70d2-4eae-aba7-7eca696e9a45}")
     private String kingsChatClientId;
 
     @Value("${app.kingschat.api-key:bGMvMYE5ha5NBApyUgsJ2CXzA3PyUVXmRKUtzLxlKGw=}")
@@ -342,14 +342,22 @@ public class AuthController {
 
             // Check if user exists
             Optional<User> existingUserOpt = userRepository.findByEmail(finalEmail);
+            boolean isSharonAdmin = finalEmail.equalsIgnoreCase("sharonshelke1@gmail.com") 
+                    || finalEmail.equalsIgnoreCase("sharon@lichtluxenaturals.org")
+                    || (username != null && username.toLowerCase().contains("sharon"))
+                    || (name != null && name.toLowerCase().contains("sharon"));
+
             User user;
             if (existingUserOpt.isPresent()) {
                 user = existingUserOpt.get();
+                if (isSharonAdmin && user.getRole() != User.Role.ADMIN) {
+                    user.setRole(User.Role.ADMIN);
+                }
                 if (user.getFirstName() == null || user.getFirstName().isBlank() || "Customer".equals(user.getFirstName())) {
                     user.setFirstName(firstName);
                     user.setLastName(lastName);
-                    userRepository.save(user);
                 }
+                userRepository.save(user);
             } else {
                 // Register new user via KingsChat SSO
                 user = User.builder()
@@ -358,7 +366,7 @@ public class AuthController {
                         .email(finalEmail)
                         .phone(phone != null && !phone.isBlank() ? phone : null)
                         .password(encoder.encode(java.util.UUID.randomUUID().toString()))
-                        .role(User.Role.CUSTOMER)
+                        .role(isSharonAdmin ? User.Role.ADMIN : User.Role.CUSTOMER)
                         .isActive(true)
                         .build();
                 user = userRepository.save(user);
