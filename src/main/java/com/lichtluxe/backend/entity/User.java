@@ -33,10 +33,10 @@ public class User {
     @Column(name = "first_name")
     private String firstName;
 
-    @NotBlank
     @Size(max = 100)
     @Column(name = "last_name")
-    private String lastName;
+    @Builder.Default
+    private String lastName = "";
 
     @NotBlank
     @Email
@@ -44,9 +44,17 @@ public class User {
     @Column(unique = true)
     private String email;
 
-    @Size(max = 20)
+    @Size(max = 30)
     @Column(unique = true)
     private String phone;
+
+    @Size(max = 100)
+    @Column(name = "kingschat_id")
+    private String kingschatId;
+
+    @Column(name = "kingchat_login_count")
+    @Builder.Default
+    private Integer kingchatLoginCount = 0;
 
     @NotBlank
     @Size(max = 255)

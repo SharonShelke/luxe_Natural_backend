@@ -57,7 +57,7 @@ public class AuthController {
     @Value("${app.kingschat.project-id:c4492f85-ffcf-46ad-97d4-4aa7fa0de03b}")
     private String kingsChatProjectId;
 
-    @Value("${app.kingschat.client-id:7de6b647-70d2-4eae-aba7-7eca696e9a45}")
+    @Value("${app.kingschat.client-id:5510380c-caac-4baa-ad0c-288dcdffaf1f}")
     private String kingsChatClientId;
 
     @Value("${app.kingschat.api-key:bGMvMYE5ha5NBApyUgsJ2CXzA3PyUVXmRKUtzLxlKGw=}")
@@ -488,35 +488,61 @@ public class AuthController {
             lastName = "";
         }
 
-        // Link or create user in database
-        Optional<User> existingUserOpt = userRepository.findByEmail(email);
+        // Lookup in database:
+        // 1. By KingsChat ID
+        Optional<User> userOpt = Optional.empty();
+        if (kcId != null && !kcId.isBlank()) {
+            userOpt = userRepository.findByKingschatId(kcId);
+        }
+        // 2. By Email
+        if (userOpt.isEmpty()) {
+            userOpt = userRepository.findByEmailIgnoreCase(email);
+        }
+        // 3. By Phone
+        if (userOpt.isEmpty() && phone != null && !phone.isBlank()) {
+            userOpt = userRepository.findByPhone(phone);
+        }
+
         boolean isSharonAdmin = email.equalsIgnoreCase("sharonshelke1@gmail.com")
                 || email.equalsIgnoreCase("sharon@lichtluxenaturals.org")
                 || (username != null && username.toLowerCase().contains("sharon"));
 
         User user;
-        if (existingUserOpt.isPresent()) {
-            user = existingUserOpt.get();
+        if (userOpt.isPresent()) {
+            user = userOpt.get();
             boolean needsSave = false;
             if (isSharonAdmin && user.getRole() != User.Role.ADMIN) {
                 user.setRole(User.Role.ADMIN);
                 needsSave = true;
             }
+            if (kcId != null && !kcId.isBlank() && (user.getKingschatId() == null || !user.getKingschatId().equals(kcId))) {
+                user.setKingschatId(kcId);
+                needsSave = true;
+            }
+            if (phone != null && !phone.isBlank() && (user.getPhone() == null || user.getPhone().isBlank())) {
+                user.setPhone(phone);
+                needsSave = true;
+            }
             if ((user.getFirstName() == null || user.getFirstName().isBlank() || "Customer".equals(user.getFirstName()))
                     && firstName != null && !firstName.isBlank()) {
                 user.setFirstName(firstName);
-                user.setLastName(lastName);
+                if (lastName != null) user.setLastName(lastName);
                 needsSave = true;
             }
+            user.setKingchatLoginCount((user.getKingchatLoginCount() != null ? user.getKingchatLoginCount() : 0) + 1);
+            needsSave = true;
+
             if (needsSave) {
-                userRepository.save(user);
+                user = userRepository.save(user);
             }
         } else {
             user = User.builder()
                     .firstName(firstName)
-                    .lastName(lastName)
+                    .lastName(lastName != null ? lastName : "")
                     .email(email)
                     .phone(phone != null && !phone.isBlank() ? phone : null)
+                    .kingschatId(kcId)
+                    .kingchatLoginCount(1)
                     .password(encoder.encode(java.util.UUID.randomUUID().toString()))
                     .role(isSharonAdmin ? User.Role.ADMIN : User.Role.CUSTOMER)
                     .isActive(true)

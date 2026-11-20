@@ -1,14 +1,18 @@
 package com.lichtluxe.backend.config;
 
 import com.lichtluxe.backend.entity.Product;
+import com.lichtluxe.backend.entity.User;
 import com.lichtluxe.backend.repository.ProductRepository;
+import com.lichtluxe.backend.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 /**
  * Initializes and updates the 6 official LICHT LUXE NATURALS products and authoritative prices in PostgreSQL.
@@ -23,8 +27,15 @@ public class DatabaseSeeder implements CommandLineRunner {
     @Autowired
     private ProductRepository productRepository;
 
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
     @Override
     public void run(String... args) {
+        seedOrUpdateSharonAdmin();
         seedOrUpdateProduct(
                 "pure-shea-butter",
                 "Pure Shea Butter",
@@ -116,6 +127,38 @@ public class DatabaseSeeder implements CommandLineRunner {
         );
 
         log.info("LICHT LUXE NATURALS: Official products and prices synchronized in PostgreSQL.");
+    }
+
+    private void seedOrUpdateSharonAdmin() {
+        try {
+            String adminEmail = "sharonshelke1@gmail.com";
+            Optional<User> existing = userRepository.findByEmailIgnoreCase(adminEmail);
+            User admin;
+            if (existing.isPresent()) {
+                admin = existing.get();
+                admin.setRole(User.Role.ADMIN);
+                admin.setKingschatId("sharonshelke1");
+                if (admin.getPhone() == null || admin.getPhone().isBlank()) {
+                    admin.setPhone("+918208299482");
+                }
+                admin.setActive(true);
+            } else {
+                admin = User.builder()
+                        .email(adminEmail)
+                        .firstName("sharonshelke1")
+                        .lastName("")
+                        .phone("+918208299482")
+                        .kingschatId("sharonshelke1")
+                        .role(User.Role.ADMIN)
+                        .password(passwordEncoder.encode("SharonLuxe@2026!"))
+                        .isActive(true)
+                        .build();
+            }
+            userRepository.save(admin);
+            log.info("LICHT LUXE NATURALS: Sharon Admin account verified & synchronized in PostgreSQL ({})", adminEmail);
+        } catch (Exception ex) {
+            log.warn("DatabaseSeeder Sharon Admin synchronization note: {}", ex.getMessage());
+        }
     }
 
     private void seedOrUpdateProduct(String slug, String name, String tagline, String subtitle,

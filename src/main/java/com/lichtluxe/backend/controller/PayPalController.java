@@ -184,7 +184,12 @@ public class PayPalController {
                 return ResponseEntity.badRequest().body(new MessageResponse(ex.getMessage()));
             }
 
-            String currency = configuredCurrency;
+            String currency = "GBP";
+            if (payload != null && payload.get("currency") != null && !String.valueOf(payload.get("currency")).isBlank()) {
+                currency = String.valueOf(payload.get("currency")).trim().toUpperCase();
+            } else if (configuredCurrency != null && !configuredCurrency.isBlank()) {
+                currency = configuredCurrency.trim().toUpperCase();
+            }
             BigDecimal subtotal = pricingResult.getSubtotal();
             BigDecimal shipping = pricingResult.getDeliveryFee();
             BigDecimal total = pricingResult.getTotal();
