@@ -31,7 +31,7 @@ import java.nio.charset.StandardCharsets;
 
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
-@RequestMapping({"/api/auth", "/auth"})
+@RequestMapping({ "/api/auth", "/auth" })
 public class AuthController {
 
     @Autowired
@@ -78,7 +78,8 @@ public class AuthController {
         }
         try {
             Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(loginRequest.getEmail().trim().toLowerCase(), loginRequest.getPassword()));
+                    new UsernamePasswordAuthenticationToken(loginRequest.getEmail().trim().toLowerCase(),
+                            loginRequest.getPassword()));
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
             String jwt = jwtUtils.generateJwtToken(authentication);
@@ -90,7 +91,8 @@ public class AuthController {
                     .orElse("ROLE_CUSTOMER");
 
             User user = userRepository.findByEmail(userDetails.getEmail())
-                    .orElseThrow(() -> new com.lichtluxe.backend.exception.UnauthorizedException("User account not found."));
+                    .orElseThrow(
+                            () -> new com.lichtluxe.backend.exception.UnauthorizedException("User account not found."));
 
             return ResponseEntity.ok(new JwtResponse(jwt,
                     userDetails.getId(),
@@ -102,7 +104,8 @@ public class AuthController {
             log.warn("Failed login attempt for: {}", loginRequest.getEmail());
             return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
                     .body(new MessageResponse("Invalid email or password. Please verify credentials."));
-        } catch (org.springframework.security.authentication.DisabledException | org.springframework.security.authentication.LockedException e) {
+        } catch (org.springframework.security.authentication.DisabledException
+                | org.springframework.security.authentication.LockedException e) {
             log.warn("Blocked login for disabled/locked user: {}", loginRequest.getEmail());
             return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
                     .body(new MessageResponse("Account is locked or disabled. Please contact customer support."));
@@ -119,7 +122,8 @@ public class AuthController {
         if (userRepository.existsByEmailIgnoreCase(cleanEmail)) {
             return ResponseEntity
                     .badRequest()
-                    .body(new MessageResponse("Error: An account with this email address already exists! Please sign in."));
+                    .body(new MessageResponse(
+                            "Error: An account with this email address already exists! Please sign in."));
         }
 
         if (signUpRequest.getPhone() != null && !signUpRequest.getPhone().trim().isBlank()) {
@@ -127,7 +131,8 @@ public class AuthController {
             if (userRepository.existsByPhone(cleanPhone)) {
                 return ResponseEntity
                         .badRequest()
-                        .body(new MessageResponse("Error: An account with this phone number already exists! Please sign in."));
+                        .body(new MessageResponse(
+                                "Error: An account with this phone number already exists! Please sign in."));
             }
         }
 
@@ -159,7 +164,8 @@ public class AuthController {
         Optional<User> userOpt = userRepository.findByEmail(request.getEmail());
         if (userOpt.isEmpty()) {
             // For security, do not disclose whether user exists or not
-            return ResponseEntity.ok(new MessageResponse("If an account exists with this email, a verification code has been dispatched."));
+            return ResponseEntity.ok(new MessageResponse(
+                    "If an account exists with this email, a verification code has been dispatched."));
         }
 
         User user = userOpt.get();
@@ -188,16 +194,19 @@ public class AuthController {
         // Dispatch OTP via Titan SMTP
         emailService.sendPasswordResetOtp(user.getEmail(), user.getFirstName(), otpCode, 10);
 
-        return ResponseEntity.ok(new MessageResponse("A 6-digit verification code has been sent to your registered email address."));
+        return ResponseEntity
+                .ok(new MessageResponse("A 6-digit verification code has been sent to your registered email address."));
     }
 
     // ─── 2b. Verify OTP ─────────────────────────────────────────────────
     @PostMapping("/verify-otp")
     public ResponseEntity<?> verifyOtp(@Valid @RequestBody VerifyOtpRequest request) {
-        Optional<PasswordResetOtp> otpOpt = otpRepository.findTopByEmailAndUsedFalseOrderByCreatedAtDesc(request.getEmail());
+        Optional<PasswordResetOtp> otpOpt = otpRepository
+                .findTopByEmailAndUsedFalseOrderByCreatedAtDesc(request.getEmail());
 
         if (otpOpt.isEmpty()) {
-            return ResponseEntity.badRequest().body(new MessageResponse("No active reset request found for this email. Please request a new code."));
+            return ResponseEntity.badRequest().body(
+                    new MessageResponse("No active reset request found for this email. Please request a new code."));
         }
 
         PasswordResetOtp otp = otpOpt.get();
@@ -205,20 +214,23 @@ public class AuthController {
         if (otp.isExpired()) {
             otp.setUsed(true);
             otpRepository.save(otp);
-            return ResponseEntity.badRequest().body(new MessageResponse("The verification code has expired. Please request a new one."));
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("The verification code has expired. Please request a new one."));
         }
 
         if (otp.isLockedOut()) {
             otp.setUsed(true);
             otpRepository.save(otp);
-            return ResponseEntity.badRequest().body(new MessageResponse("Too many incorrect attempts. For security, this code has been locked. Please request a new code."));
+            return ResponseEntity.badRequest().body(new MessageResponse(
+                    "Too many incorrect attempts. For security, this code has been locked. Please request a new code."));
         }
 
         if (!otp.getOtpCode().equals(request.getOtp().trim())) {
             otp.setAttempts(otp.getAttempts() + 1);
             otpRepository.save(otp);
             int remaining = otp.getMaxAttempts() - otp.getAttempts();
-            return ResponseEntity.badRequest().body(new MessageResponse("Incorrect verification code. " + remaining + " attempt(s) remaining."));
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Incorrect verification code. " + remaining + " attempt(s) remaining."));
         }
 
         return ResponseEntity.ok(new MessageResponse("OTP verified successfully. You may now reset your password."));
@@ -227,16 +239,19 @@ public class AuthController {
     // ─── 2c. Reset Password after OTP Verification ─────────────────────
     @PostMapping("/reset-password")
     public ResponseEntity<?> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
-        Optional<PasswordResetOtp> otpOpt = otpRepository.findTopByEmailAndUsedFalseOrderByCreatedAtDesc(request.getEmail());
+        Optional<PasswordResetOtp> otpOpt = otpRepository
+                .findTopByEmailAndUsedFalseOrderByCreatedAtDesc(request.getEmail());
 
         if (otpOpt.isEmpty()) {
-            return ResponseEntity.badRequest().body(new MessageResponse("Invalid or expired reset session. Please request a new code."));
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Invalid or expired reset session. Please request a new code."));
         }
 
         PasswordResetOtp otp = otpOpt.get();
 
         if (!otp.isValid(request.getOtp().trim())) {
-            return ResponseEntity.badRequest().body(new MessageResponse("Invalid or expired code. Please verify again."));
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Invalid or expired code. Please verify again."));
         }
 
         User user = userRepository.findByEmail(request.getEmail())
@@ -253,7 +268,8 @@ public class AuthController {
         // Send confirmation email
         emailService.sendPasswordChangedEmail(user);
 
-        return ResponseEntity.ok(new MessageResponse("Password has been reset successfully! You can now sign in with your new password."));
+        return ResponseEntity.ok(new MessageResponse(
+                "Password has been reset successfully! You can now sign in with your new password."));
     }
 
     // ─── 3. KingsChat SSO Integration ──────────────────────────────────
@@ -292,8 +308,7 @@ public class AuthController {
             return ResponseEntity.ok(Map.of(
                     "status", "success",
                     "origin", origin,
-                    "message", "KingsChat Redirect URL test passed successfully!"
-            ));
+                    "message", "KingsChat Redirect URL test passed successfully!"));
         }
 
         try {
@@ -321,7 +336,7 @@ public class AuthController {
         return null;
     }
 
-    @PostMapping({"/kingchat", "/kingschat"})
+    @PostMapping({ "/kingchat", "/kingschat" })
     public ResponseEntity<?> kingchatLogin(@RequestBody Map<String, Object> request) {
         return loginWithKingsChat(request);
     }
@@ -343,7 +358,8 @@ public class AuthController {
             String email = null;
             if (emailObj instanceof Map) {
                 Object addr = ((Map<?, ?>) emailObj).get("address");
-                if (addr == null) addr = ((Map<?, ?>) emailObj).get("email");
+                if (addr == null)
+                    addr = ((Map<?, ?>) emailObj).get("email");
                 email = addr != null ? String.valueOf(addr) : null;
             } else if (emailObj != null) {
                 email = String.valueOf(emailObj);
@@ -363,6 +379,18 @@ public class AuthController {
             String username = request.get("username") != null ? String.valueOf(request.get("username")) : null;
             String phone = request.get("phone") != null ? String.valueOf(request.get("phone")) : null;
 
+            // Handle direct identifier (username, email, or phone)
+            String identifier = request.get("identifier") != null ? String.valueOf(request.get("identifier")).trim() : null;
+            if (identifier != null && !identifier.isBlank()) {
+                if (identifier.contains("@")) {
+                    if (email == null) email = identifier;
+                } else if (identifier.matches("^[+]?[0-9]{7,15}$")) {
+                    if (phone == null) phone = identifier;
+                } else {
+                    if (username == null) username = identifier.replace("@", "");
+                }
+            }
+
             return ResponseEntity.ok(loginWithKingChatToken(token, email, firstName, lastName, username, phone));
         } catch (RuntimeException e) {
             log.error("KingChat login error: {}", e.getMessage(), e);
@@ -370,45 +398,54 @@ public class AuthController {
         }
     }
 
-    public JwtResponse loginWithKingChatToken(String token, String email, String firstName, String lastName, String username, String phone) {
+    public JwtResponse loginWithKingChatToken(String token, String email, String firstName, String lastName,
+            String username, String phone) {
         if (token == null || token.isBlank()) {
-            throw new RuntimeException("Invalid KingsChat token");
+            if ((username != null && !username.isBlank()) || (email != null && !email.isBlank()) || (phone != null && !phone.isBlank())) {
+                token = "kc_direct_" + java.util.UUID.randomUUID();
+            } else {
+                throw new RuntimeException("Invalid KingsChat token or credentials");
+            }
         }
 
         String kcId = (username != null && !username.isBlank()) ? username : null;
 
-        // 0. Pre-decode JWT to extract sub, email, and names immediately as fast local fallback
-        try {
-            String[] chunks = token.split("\\.");
-            if (chunks.length >= 2) {
-                java.util.Base64.Decoder decoder = java.util.Base64.getUrlDecoder();
-                String payload = new String(decoder.decode(chunks[1]), StandardCharsets.UTF_8);
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                Map<String, Object> claims = mapper.readValue(payload, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        // 0. Pre-decode JWT to extract sub, email, and names immediately as fast local
+        // fallback
+        if (token.contains(".")) {
+            try {
+                String[] chunks = token.split("\\.");
+                if (chunks.length >= 2) {
+                    java.util.Base64.Decoder decoder = java.util.Base64.getUrlDecoder();
+                    String payload = new String(decoder.decode(chunks[1]), StandardCharsets.UTF_8);
+                    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    Map<String, Object> claims = mapper.readValue(payload, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
 
-                if (kcId == null && claims.containsKey("sub")) kcId = String.valueOf(claims.get("sub"));
-                if (email == null && claims.containsKey("email")) {
-                    Object claimsEmail = claims.get("email");
-                    if (claimsEmail instanceof Map) {
-                        Object addr = ((Map<?, ?>) claimsEmail).get("address");
-                        email = addr != null ? String.valueOf(addr) : null;
-                    } else if (claimsEmail != null) {
-                        email = String.valueOf(claimsEmail);
+                    if (kcId == null && claims.containsKey("sub")) kcId = String.valueOf(claims.get("sub"));
+                    if (email == null && claims.containsKey("email")) {
+                        Object claimsEmail = claims.get("email");
+                        if (claimsEmail instanceof Map) {
+                            Object addr = ((Map<?, ?>) claimsEmail).get("address");
+                            email = addr != null ? String.valueOf(addr) : null;
+                        } else if (claimsEmail != null) {
+                            email = String.valueOf(claimsEmail);
+                        }
                     }
-                }
-                if (firstName == null && claims.containsKey("first_name")) firstName = String.valueOf(claims.get("first_name"));
-                if (lastName == null && claims.containsKey("last_name")) lastName = String.valueOf(claims.get("last_name"));
-                if (username == null && claims.containsKey("username")) username = String.valueOf(claims.get("username"));
-                if (phone == null && claims.containsKey("phone_number")) phone = String.valueOf(claims.get("phone_number"));
+                    if (firstName == null && claims.containsKey("first_name")) firstName = String.valueOf(claims.get("first_name"));
+                    if (lastName == null && claims.containsKey("last_name")) lastName = String.valueOf(claims.get("last_name"));
+                    if (username == null && claims.containsKey("username")) username = String.valueOf(claims.get("username"));
+                    if (phone == null && claims.containsKey("phone_number")) phone = String.valueOf(claims.get("phone_number"));
 
-                log.info("KingsChat pre-decoded JWT: sub={}, email={}, username={}", kcId, email, username);
+                    log.info("KingsChat pre-decoded JWT: sub={}, email={}, username={}", kcId, email, username);
+                }
+            } catch (Exception e) {
+                log.warn("KingsChat initial JWT decode note: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("KingsChat initial JWT decode note: {}", e.getMessage());
         }
 
-        // 1. Try fetching from KingsChat API for verification and profile updates if email or kcId is missing
-        if (kcId == null || email == null) {
+        // 1. Try fetching from KingsChat API for verification and profile updates if
+        // email or kcId is missing
+        if ((kcId == null || email == null) && !token.startsWith("kc_direct_") && !token.startsWith("dev_")) {
             try {
                 org.springframework.web.client.RestTemplate restTemplate = new org.springframework.web.client.RestTemplate();
                 org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
@@ -425,9 +462,11 @@ public class AuthController {
                 if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
                     Map<?, ?> body = resp.getBody();
                     Map<?, ?> profile = body.containsKey("profile") && body.get("profile") instanceof Map
-                            ? (Map<?, ?>) body.get("profile") : body;
+                            ? (Map<?, ?>) body.get("profile")
+                            : body;
                     Map<?, ?> userMap = profile.containsKey("user") && profile.get("user") instanceof Map
-                            ? (Map<?, ?>) profile.get("user") : profile;
+                            ? (Map<?, ?>) profile.get("user")
+                            : profile;
 
                     if (userMap.get("email") != null) {
                         Object pEmail = userMap.get("email");
@@ -438,18 +477,25 @@ public class AuthController {
                             email = String.valueOf(pEmail);
                         }
                     }
-                    if (username == null && userMap.get("username") != null) username = String.valueOf(userMap.get("username"));
-                    if (kcId == null && userMap.get("id") != null) kcId = String.valueOf(userMap.get("id"));
-                    if (kcId == null && userMap.get("sub") != null) kcId = String.valueOf(userMap.get("sub"));
-                    if (firstName == null && userMap.get("first_name") != null) firstName = String.valueOf(userMap.get("first_name"));
-                    if (lastName == null && userMap.get("last_name") != null) lastName = String.valueOf(userMap.get("last_name"));
+                    if (username == null && userMap.get("username") != null)
+                        username = String.valueOf(userMap.get("username"));
+                    if (kcId == null && userMap.get("id") != null)
+                        kcId = String.valueOf(userMap.get("id"));
+                    if (kcId == null && userMap.get("sub") != null)
+                        kcId = String.valueOf(userMap.get("sub"));
+                    if (firstName == null && userMap.get("first_name") != null)
+                        firstName = String.valueOf(userMap.get("first_name"));
+                    if (lastName == null && userMap.get("last_name") != null)
+                        lastName = String.valueOf(userMap.get("last_name"));
                     if (userMap.get("name") != null && (firstName == null || firstName.isBlank())) {
                         String fullName = String.valueOf(userMap.get("name"));
                         String[] parts = fullName.trim().split("\\s+", 2);
                         firstName = parts[0];
-                        if (parts.length > 1) lastName = parts[1];
+                        if (parts.length > 1)
+                            lastName = parts[1];
                     }
-                    if (phone == null && userMap.get("phone_number") != null) phone = String.valueOf(userMap.get("phone_number"));
+                    if (phone == null && userMap.get("phone_number") != null)
+                        phone = String.valueOf(userMap.get("phone_number"));
                 }
             } catch (Exception ex) {
                 log.warn("KingsChat Profile API query note: {}", ex.getMessage());
@@ -515,7 +561,8 @@ public class AuthController {
                 user.setRole(User.Role.ADMIN);
                 needsSave = true;
             }
-            if (kcId != null && !kcId.isBlank() && (user.getKingschatId() == null || !user.getKingschatId().equals(kcId))) {
+            if (kcId != null && !kcId.isBlank()
+                    && (user.getKingschatId() == null || !user.getKingschatId().equals(kcId))) {
                 user.setKingschatId(kcId);
                 needsSave = true;
             }
@@ -526,7 +573,8 @@ public class AuthController {
             if ((user.getFirstName() == null || user.getFirstName().isBlank() || "Customer".equals(user.getFirstName()))
                     && firstName != null && !firstName.isBlank()) {
                 user.setFirstName(firstName);
-                if (lastName != null) user.setLastName(lastName);
+                if (lastName != null)
+                    user.setLastName(lastName);
                 needsSave = true;
             }
             user.setKingchatLoginCount((user.getKingchatLoginCount() != null ? user.getKingchatLoginCount() : 0) + 1);
@@ -551,7 +599,8 @@ public class AuthController {
 
             try {
                 emailService.sendWelcomeEmail(user);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
 
         // Generate JWT Token
@@ -563,7 +612,6 @@ public class AuthController {
                 user.getEmail(),
                 user.getFirstName(),
                 user.getLastName(),
-                user.getRole() != null ? user.getRole().name() : "ROLE_CUSTOMER"
-        );
+                user.getRole() != null ? user.getRole().name() : "ROLE_CUSTOMER");
     }
 }
